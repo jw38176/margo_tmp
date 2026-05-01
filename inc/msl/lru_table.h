@@ -138,19 +138,30 @@ public:
     return hit->data;
   }
 
-  void fill(const value_type& elem)
+  // Inserts or updates `elem` in the table. Returns the evicted entry when the
+  // insertion replaces a valid LRU way; returns std::nullopt when the insertion
+  // updates an existing entry (tag hit) or fills a previously-invalid way.
+  std::optional<value_type> fill(const value_type& elem)
   {
     auto tag = tag_projection(elem);
     auto [set_begin, set_end] = get_set_span(elem);
-    if (set_begin != set_end) {
-      auto [miss, hit] = std::minmax_element(set_begin, set_end, match_and_check(tag));
-
-      if (tag_projection(hit->data) == tag) {
-        *hit = {++access_count, elem};
-      } else {
-        *miss = {++access_count, elem};
-      }
+    if (set_begin == set_end) {
+      return std::nullopt;
     }
+
+    auto [miss, hit] = std::minmax_element(set_begin, set_end, match_and_check(tag));
+
+    if (tag_projection(hit->data) == tag) {
+      *hit = {++access_count, elem};
+      return std::nullopt;
+    }
+
+    std::optional<value_type> evicted;
+    if (miss->last_used > 0) {
+      evicted = miss->data;
+    }
+    *miss = {++access_count, elem};
+    return evicted;
   }
 
   std::optional<value_type> invalidate(const value_type& elem)
