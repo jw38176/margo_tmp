@@ -26,9 +26,9 @@ uint64_t Sampler::rand_u64()
 
 bool Sampler::should_sample()
 {
-  if (_train_ratio <= 1) {
+  if (_train_ratio <= 1)
     return true;
-  }
+
   return (rand_u64() % _train_ratio) == 0;
 }
 
@@ -38,14 +38,20 @@ std::optional<Sampler::sampler_entry> Sampler::record_prefetch(champsim::address
   probe.pf_line_addr = pf_line_addr;
 
   // Check if the prefetch is already in the table
-  if (auto hit = _table.check_hit(probe); hit.has_value()) {
+  if (auto hit = _table.check_hit(probe); hit.has_value())
+  {
+
     sampler_entry updated = hit.value();
-    if (prefetcher_id < updated.prefetch_timestamps.size()) {
+
+    if (prefetcher_id < updated.prefetch_timestamps.size())
+    {
       updated.prefetch_timestamps[prefetcher_id] = cycle;
       updated.prefetch_src_pcs[prefetcher_id] = src_ip;
     }
+
     // Update the entry in the table
     _table.fill(updated);
+
     return std::nullopt;
   }
 
@@ -56,7 +62,9 @@ std::optional<Sampler::sampler_entry> Sampler::record_prefetch(champsim::address
   e.first_used_timestamp = cycle;
   e.prefetch_timestamps.assign(_num_prefetchers, 0);
   e.prefetch_src_pcs.assign(_num_prefetchers, champsim::address{});
-  if (prefetcher_id < _num_prefetchers) {
+
+  if (prefetcher_id < _num_prefetchers)
+  {
     e.prefetch_timestamps[prefetcher_id] = cycle;
     e.prefetch_src_pcs[prefetcher_id] = src_ip;
   }
@@ -72,14 +80,17 @@ void Sampler::mark_filled(champsim::address pf_line_addr, uint64_t cycle)
   probe.pf_line_addr = pf_line_addr;
 
   auto hit = _table.check_hit(probe);
-  if (!hit.has_value()) {
+
+  if (!hit.has_value())
     return;
-  }
 
   sampler_entry updated = hit.value();
-  if (updated.fill_latency == 0 && cycle >= updated.first_used_timestamp) {
+
+  if (updated.fill_latency == 0 && cycle >= updated.first_used_timestamp)
+  {
     updated.fill_latency = cycle - updated.first_used_timestamp;
   }
+
   _table.fill(updated);
 }
 
@@ -93,19 +104,20 @@ Sampler::check_and_evict_entry(champsim::address line_addr)
   return removed;
 }
 
+// TODO: Rough implementation for now
 void Sampler::retune_train_ratio(uint64_t cache_evicts, uint64_t table_evicts)
 {
   // Sampler is thrashing faster than the cache: track fewer prefetches.
-  if (table_evicts > 400 && table_evicts > cache_evicts * 2
-      && _train_ratio < MAX_TRAIN_RATIO) {
+  if (table_evicts > 400 && table_evicts > cache_evicts * 2 && _train_ratio < MAX_TRAIN_RATIO)
+  {
     _train_ratio *= 2;
     return;
   }
 
   // Cache is churning much faster than the sampler: we can afford to track
   // a denser sample.
-  if (cache_evicts > 400 && cache_evicts > table_evicts * 2
-      && _train_ratio > MIN_TRAIN_RATIO) {
+  if (cache_evicts > 400 && cache_evicts > table_evicts * 2 && _train_ratio > MIN_TRAIN_RATIO)
+  {
     _train_ratio /= 2;
   }
 }
