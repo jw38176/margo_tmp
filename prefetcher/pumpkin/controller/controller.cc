@@ -28,10 +28,10 @@ utility_tracker_entry& FilterTable::get(champsim::address pc, std::size_t prefet
 // Controller
 /////////////////////////////////////////////////////////////
 
-Controller::Controller(std::size_t num_prefetchers, std::size_t filter_table_size): 
-_num_prefetchers(num_prefetchers),
-_filter_table(filter_table_size, num_prefetchers) 
-{}
+Controller::Controller(std::size_t num_prefetchers, std::size_t filter_table_size)
+    : _num_prefetchers(num_prefetchers), _filter_table(filter_table_size, num_prefetchers)
+{
+}
 
 Controller::~Controller() = default;
 
@@ -66,14 +66,17 @@ void Controller::process_sample_entry(const Sampler::sampler_entry& entry, Sampl
   }
 
   /*
-  ACCESS PATH:
-  Collect every prefetcher that touched the line.
-  Each will count as an accurate prefetch
-  The fill_latency credit is split based on how recently they issued the prefetch.
+  ACCESS PATH
   */
   case SampleEntryType::Access:
   {
-    std::vector<std::size_t> contributors;
+    struct contributor
+    {
+      std::size_t prefetcher_id;
+      double absolute_accuracy;
+    };
+
+    std::vector<contributor> contributors;
     contributors.reserve(_num_prefetchers);
 
     for (std::size_t i = 0; i < _num_prefetchers; i++)
@@ -84,43 +87,56 @@ void Controller::process_sample_entry(const Sampler::sampler_entry& entry, Sampl
         continue;
       }
 
-      contributors.push_back(i);
       utility_tracker_entry& filter_table_entry = _filter_table.get(prefetch_src_pcs[i], i);
+
+      // Calculate the absolute accuracy of the prefetcher
+      const uint64_t total = filter_table_entry.acc_pf_count + filter_table_entry.inacc_pf_count;
+      const double abs_acc = (total == 0) ? 0.0 : static_cast<double>(filter_table_entry.acc_pf_count) / static_cast<double>(total);
+      contributors.push_back({i, abs_acc});
+
       filter_table_entry.acc_pf_count += 1;
     }
 
     if (contributors.empty() || fill_latency == 0)
       return;
 
-    std::sort(contributors.begin(), contributors.end(), [&](std::size_t a, std::size_t b) { return prefetch_timestamps[a] > prefetch_timestamps[b]; });
+    // Sort contributors by absolute accuracy. Ties broken by earlier
+    // timestamp so the more timely prefetch gets first crack at credit.
+    std::sort(contributors.begin(), contributors.end(),
+              [&](const contributor& a, const contributor& b)
+              {
+                if (a.absolute_accuracy != b.absolute_accuracy)
+                  return a.absolute_accuracy > b.absolute_accuracy;
+                return prefetch_timestamps[a.prefetcher_id] < prefetch_timestamps[b.prefetcher_id];
+              });
 
-    const uint64_t window_start = (current_cycle > fill_latency) ? current_cycle - fill_latency : 0;
+    const uint64_t cov_window_start = current_cycle - fill_latency;
 
-    uint64_t segment_end = current_cycle;
+    // earliest_covered marks the earliest cycle in the window already credited by a more accurate prefetch.
+    // New prefetches only get credit for cycles before this point.
+    uint64_t earliest_covered = current_cycle;
 
-    for (std::size_t i : contributors)
+    for (const contributor& c : contributors)
     {
+      const std::size_t i = c.prefetcher_id;
+      const uint64_t t_p = std::max(prefetch_timestamps[i], cov_window_start);
 
-      const uint64_t t_p = std::max(prefetch_timestamps[i], window_start);
-
-      if (t_p >= segment_end)
+      if (t_p >= earliest_covered)
       {
-        // A more recent prefetcher already claimed all remaining cycles.
-        break;
+        // Already covered by a more accurate prefetcher
+        continue;
       }
 
       utility_tracker_entry& filter_table_entry = _filter_table.get(prefetch_src_pcs[i], i);
 
-      const uint64_t covered = segment_end - t_p;
+      const uint64_t new_coverage = earliest_covered - t_p;
 
-      /*
-      Marginal Utility Calculation:
-      The marginal utility is the fraction of the fill latency that this prefetcher hid.
-      The fill latency credit is split based on how recently they issued the prefetch.
-      */
-      filter_table_entry.marginal_utility += static_cast<double>(covered) / static_cast<double>(fill_latency);
+      filter_table_entry.marginal_utility += static_cast<double>(new_coverage) / static_cast<double>(fill_latency);
 
-      segment_end = t_p;
+      earliest_covered = t_p;
+
+      if (earliest_covered <= cov_window_start)
+        break;
     }
   }
   }
