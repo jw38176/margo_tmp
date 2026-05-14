@@ -45,10 +45,14 @@ void Controller::process_sample_entry(const Sampler::sampler_entry& entry, Sampl
   {
 
   /*
-  EViction PATH:
-  Mark prefetcher that touched the line as an inaccurate prefetch.
+  EVICTION PATH:
+  Both cache-side and sampler-side evictions land here. The sampler is sized
+  so that, in steady state, a SamplerEvict is the calibrated stand-in for the
+  cache evict that would have happened had the line actually been prefetched.
+  Mark every contributing prefetcher as an inaccurate prefetch.
   */
   case SampleEntryType::Evict:
+  case SampleEntryType::SamplerEvict:
   {
     for (std::size_t i = 0; i < _num_prefetchers; i++)
     {
@@ -66,7 +70,8 @@ void Controller::process_sample_entry(const Sampler::sampler_entry& entry, Sampl
   }
 
   /*
-  ACCESS PATH
+  ACCESS PATH:
+  Positive training: the demand consumed (or would have consumed) the prefetched line.
   */
   case SampleEntryType::Access:
   {
@@ -139,6 +144,22 @@ void Controller::process_sample_entry(const Sampler::sampler_entry& entry, Sampl
         break;
     }
   }
+  }
+}
+
+void Controller::process_eviction_event(const Sampler::EvictionEvent& event, uint64_t current_cycle)
+{
+  switch (event.cause)
+  {
+  case Sampler::EvictionCause::CacheHit:
+    process_sample_entry(event.entry, SampleEntryType::Access, current_cycle);
+    return;
+  case Sampler::EvictionCause::CacheEvict:
+    process_sample_entry(event.entry, SampleEntryType::Evict, current_cycle);
+    return;
+  case Sampler::EvictionCause::SamplerCapacity:
+    process_sample_entry(event.entry, SampleEntryType::SamplerEvict, current_cycle);
+    return;
   }
 }
 

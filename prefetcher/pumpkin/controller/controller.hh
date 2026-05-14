@@ -37,13 +37,22 @@ public:
   explicit Controller(std::size_t num_prefetchers, std::size_t filter_table_size);
   ~Controller();
 
+  // Types of sample-entry events:
+  //  - Access: demand accessed a prefetched line (positive training)
+  //  - Evict: a prefetched line was evicted before use (negative training)
+  //  - SamplerEvict: sampler evicted the entry (negative training)
   enum class SampleEntryType
   {
     Access,
-    Evict
+    Evict,
+    SamplerEvict
   };
 
   void process_sample_entry(const Sampler::sampler_entry& entry, SampleEntryType entry_type, uint64_t current_cycle);
+
+  // Convenience wrapper that routes a Sampler::EvictionEvent to the right
+  // SampleEntryType.
+  void process_eviction_event(const Sampler::EvictionEvent& event, uint64_t current_cycle);
 
   bool should_prefetch(champsim::address access_pc, std::size_t prefetcher_id);
 
