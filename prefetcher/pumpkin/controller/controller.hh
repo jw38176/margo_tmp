@@ -20,6 +20,7 @@ public:
   ~FilterTable();
 
   utility_tracker_entry& get(champsim::address pc, std::size_t prefetcher_id);
+  void decay_stats(double decay_factor, double reset_threshold);
 
 private:
   std::size_t _size;
@@ -58,10 +59,19 @@ public:
 
 private:
   std::size_t _num_prefetchers{0};
+  uint64_t _filter_stats_events{0};
 
   FilterTable _filter_table;
 
   static constexpr float SHOULD_PF_THRESHOLD = 0.5;
+
+  // Decay parameters
+  static constexpr bool ENABLE_FILTER_STATS_RESET = true;
+  static constexpr uint64_t FILTER_STATS_RESET_INTERVAL = 8192;
+  static constexpr double FILTER_STATS_DECAY_FACTOR = 0.5;
+  static constexpr double FILTER_STATS_RESET_THRESHOLD = 0.01;
+
+  void maybe_reset_filter_stats();
 };
 
 #endif

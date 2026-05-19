@@ -22,12 +22,14 @@ class RRTable
 public:
   explicit RRTable(std::size_t rr_size, std::size_t rr_entry_size, caerus* owner_arg);
 
-  struct Entry {
+  struct Entry
+  {
     uint64_t addr_tag = 0;
     uint64_t pc = 0;
   };
 
-  struct ShiftRegister {
+  struct ShiftRegister
+  {
     std::deque<Entry> entries;
   };
 
@@ -59,7 +61,8 @@ private:
 class HoldingTable
 {
 public:
-  struct Entry {
+  struct Entry
+  {
     uint64_t pref_addr_tag = 0; // tag of prefetched line
     uint64_t base_addr_tag = 0; // tag of demand address that triggered the prefetch
     uint64_t pc = 0;

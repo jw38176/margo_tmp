@@ -24,6 +24,24 @@ std::size_t FilterTable::getIndex(champsim::address pc) const
 
 utility_tracker_entry& FilterTable::get(champsim::address pc, std::size_t prefetcher_id) { return _table[getIndex(pc)][prefetcher_id]; }
 
+void FilterTable::decay_stats(double decay_factor, double reset_threshold)
+{
+  for (auto& pc_entries : _table)
+  {
+    for (utility_tracker_entry& entry : pc_entries)
+    {
+      entry.marginal_utility *= decay_factor;
+      entry.acc_pf_count /= 2;
+      entry.inacc_pf_count /= 2;
+
+      if (entry.marginal_utility < reset_threshold && entry.acc_pf_count == 0 && entry.inacc_pf_count == 0)
+      {
+        entry = {};
+      }
+    }
+  }
+}
+
 /////////////////////////////////////////////////////////////
 // Controller
 /////////////////////////////////////////////////////////////
@@ -35,8 +53,23 @@ Controller::Controller(std::size_t num_prefetchers, std::size_t filter_table_siz
 
 Controller::~Controller() = default;
 
+void Controller::maybe_reset_filter_stats()
+{
+  if (!ENABLE_FILTER_STATS_RESET)
+    return;
+
+  _filter_stats_events++;
+  if (_filter_stats_events < FILTER_STATS_RESET_INTERVAL)
+    return;
+
+  _filter_stats_events = 0;
+  _filter_table.decay_stats(FILTER_STATS_DECAY_FACTOR, FILTER_STATS_RESET_THRESHOLD);
+}
+
 void Controller::process_sample_entry(const Sampler::sampler_entry& entry, SampleEntryType entry_type, uint64_t current_cycle)
 {
+  maybe_reset_filter_stats();
+
   const uint64_t& fill_latency = entry.fill_latency;
   const std::vector<uint64_t>& prefetch_timestamps = entry.prefetch_timestamps;
   const std::vector<champsim::address>& prefetch_src_pcs = entry.prefetch_src_pcs;
@@ -173,8 +206,10 @@ bool Controller::should_prefetch(champsim::address access_pc, std::size_t prefet
   const double inacc = static_cast<double>(filter_table_entry.inacc_pf_count);
   const double denom = marg_util + inacc;
 
+  // If the denominator is 0, this means that there is no prefetch history
+  // Issue the prefetch regardless to acquire feedback for this PC
   if (denom == 0.0)
-    return false;
+    return true; 
 
   const float prefetch_score = static_cast<float>(marg_util / denom);
 

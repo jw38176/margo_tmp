@@ -93,9 +93,8 @@ std::optional<Sampler::EvictionEvent> Sampler::record_prefetch(champsim::address
     maybe_retune_train_ratio();
   }
 
-  if (!victim.valid)
+  if (!victim.valid || !victim.prefetched)
   {
-    // The entry has already had its terminal event; suppress the duplicate.
     return std::nullopt;
   }
 
