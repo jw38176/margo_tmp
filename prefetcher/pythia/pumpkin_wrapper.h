@@ -1,0 +1,12 @@
+#ifndef PYTHIA_PUMPKIN_WRAPPER_H
+#define PYTHIA_PUMPKIN_WRAPPER_H
+
+#include <memory>
+
+#include "../pumpkin/wrapped_prefetcher.hh"
+
+class CACHE;
+
+std::unique_ptr<pumpkin_wrappers::WrappedPrefetcher> make_pythia_pumpkin_wrapper(CACHE* cache);
+
+#endif
