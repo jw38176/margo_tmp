@@ -66,7 +66,7 @@ void Controller::maybe_reset_filter_stats()
   _filter_table.decay_stats(FILTER_STATS_DECAY_FACTOR, FILTER_STATS_RESET_THRESHOLD);
 }
 
-void Controller::process_sample_entry(const Sampler::sampler_entry& entry, SampleEntryType entry_type, uint64_t current_cycle)
+void Controller::process_sample_entry(const PfSampler::pf_sampler_entry& entry, SampleEntryType entry_type, uint64_t current_cycle)
 {
   maybe_reset_filter_stats();
 
@@ -79,13 +79,13 @@ void Controller::process_sample_entry(const Sampler::sampler_entry& entry, Sampl
 
   /*
   EVICTION PATH:
-  Both cache-side and sampler-side evictions land here. The sampler is sized
-  so that, in steady state, a SamplerEvict is the calibrated stand-in for the
+  Both cache-side and pf_sampler-side evictions land here. The pf_sampler is sized
+  so that, in steady state, a PfSamplerEvict is the calibrated stand-in for the
   cache evict that would have happened had the line actually been prefetched.
   Mark every contributing prefetcher as an inaccurate prefetch.
   */
   case SampleEntryType::Evict:
-  case SampleEntryType::SamplerEvict:
+  case SampleEntryType::PfSamplerEvict:
   {
     for (std::size_t i = 0; i < _num_prefetchers; i++)
     {
@@ -180,20 +180,28 @@ void Controller::process_sample_entry(const Sampler::sampler_entry& entry, Sampl
   }
 }
 
-void Controller::process_eviction_event(const Sampler::EvictionEvent& event, uint64_t current_cycle)
+void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, uint64_t current_cycle)
 {
   switch (event.cause)
   {
-  case Sampler::EvictionCause::CacheHit:
+  case PfSampler::EvictionCause::CacheHit:
     process_sample_entry(event.entry, SampleEntryType::Access, current_cycle);
     return;
-  case Sampler::EvictionCause::CacheEvict:
+  case PfSampler::EvictionCause::CacheEvict:
     process_sample_entry(event.entry, SampleEntryType::Evict, current_cycle);
     return;
-  case Sampler::EvictionCause::SamplerCapacity:
-    process_sample_entry(event.entry, SampleEntryType::SamplerEvict, current_cycle);
+  case PfSampler::EvictionCause::PfSamplerCapacity:
+    process_sample_entry(event.entry, SampleEntryType::PfSamplerEvict, current_cycle);
     return;
   }
+}
+
+// For unit tests
+utility_tracker_entry& Controller::get_entry(champsim::address pc, std::size_t prefetcher_id) { return _filter_table.get(pc, prefetcher_id); }
+
+const utility_tracker_entry& Controller::get_entry(champsim::address pc, std::size_t prefetcher_id) const
+{
+  return const_cast<FilterTable&>(_filter_table).get(pc, prefetcher_id);
 }
 
 bool Controller::should_prefetch(champsim::address access_pc, std::size_t prefetcher_id)
@@ -209,7 +217,7 @@ bool Controller::should_prefetch(champsim::address access_pc, std::size_t prefet
   // If the denominator is 0, this means that there is no prefetch history
   // Issue the prefetch regardless to acquire feedback for this PC
   if (denom == 0.0)
-    return true; 
+    return true;
 
   const float prefetch_score = static_cast<float>(marg_util / denom);
 

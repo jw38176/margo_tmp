@@ -3,7 +3,7 @@
 
 #include <vector>
 
-#include "../sampler/sampler.hh"
+#include "../pf_sampler/pf_sampler.hh"
 #include "address.h"
 
 struct utility_tracker_entry
@@ -41,21 +41,25 @@ public:
   // Types of sample-entry events:
   //  - Access: demand accessed a prefetched line (positive training)
   //  - Evict: a prefetched line was evicted before use (negative training)
-  //  - SamplerEvict: sampler evicted the entry (negative training)
+  //  - PfSamplerEvict: pf_sampler evicted the entry (negative training)
   enum class SampleEntryType
   {
     Access,
     Evict,
-    SamplerEvict
+    PfSamplerEvict
   };
 
-  void process_sample_entry(const Sampler::sampler_entry& entry, SampleEntryType entry_type, uint64_t current_cycle);
+  void process_sample_entry(const PfSampler::pf_sampler_entry& entry, SampleEntryType entry_type, uint64_t current_cycle);
 
-  // Convenience wrapper that routes a Sampler::EvictionEvent to the right
+  // Convenience wrapper that routes a PfSampler::EvictionEvent to the right
   // SampleEntryType.
-  void process_eviction_event(const Sampler::EvictionEvent& event, uint64_t current_cycle);
+  void process_eviction_event(const PfSampler::EvictionEvent& event, uint64_t current_cycle);
 
   bool should_prefetch(champsim::address access_pc, std::size_t prefetcher_id);
+
+  // For unit tests
+  utility_tracker_entry& get_entry(champsim::address pc, std::size_t prefetcher_id);
+  const utility_tracker_entry& get_entry(champsim::address pc, std::size_t prefetcher_id) const;
 
 private:
   std::size_t _num_prefetchers{0};
@@ -63,7 +67,7 @@ private:
 
   FilterTable _filter_table;
 
-  static constexpr float SHOULD_PF_THRESHOLD = 0.5;
+  static constexpr float SHOULD_PF_THRESHOLD = 0.25;
 
   // Decay parameters
   static constexpr bool ENABLE_FILTER_STATS_RESET = true;

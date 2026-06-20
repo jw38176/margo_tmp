@@ -1,12 +1,13 @@
 #include "pumpkin.h"
 
 #include <cassert>
+#include <iomanip>
+#include <iostream>
 #include <memory>
+#include <numeric>
 
 #include "cache.h"
-#include "../caerus/pumpkin_wrapper.h"
-#include "../gaze/pumpkin_wrapper.h"
-#include "../ip_stride/pumpkin_wrapper.h"
+#include "sub_prefetcher_config.hh"
 
 namespace
 {
@@ -22,13 +23,19 @@ uint64_t cycle_of(const CACHE* cache)
 
 } // namespace
 
-// Initialize wrappers for sub-prefetchers and controller=
+// Initialize wrappers for sub-prefetchers and controller
 pumpkin::pumpkin(CACHE* cache) : prefetcher(cache)
 {
-  _wrapped_prefetchers.emplace_back(make_ip_stride_pumpkin_wrapper(cache));
-  _wrapped_prefetchers.emplace_back(make_caerus_pumpkin_wrapper(cache));
-  _wrapped_prefetchers.emplace_back(make_gaze_pumpkin_wrapper(cache));
-  _controller = std::make_unique<Controller>(_wrapped_prefetchers.size(), pumpkin_params::FILTER_TABLE_SIZE);
+  for (const auto& sub_prefetcher : pumpkin_wrappers::SUB_PREFETCHERS) {
+    _wrapped_prefetchers.emplace_back(sub_prefetcher.make(cache));
+  }
+  controller = std::make_unique<Controller>(_wrapped_prefetchers.size(), pumpkin_params::FILTER_TABLE_SIZE);
+  _pf_stats.assign(_wrapped_prefetchers.size(), {});
+}
+
+const char* pumpkin::sub_prefetcher_name(std::size_t prefetcher_id)
+{
+  return pumpkin_wrappers::sub_prefetcher_name(prefetcher_id);
 }
 
 uint64_t pumpkin::rand_u64()
@@ -42,21 +49,23 @@ uint64_t pumpkin::rand_u64()
 }
 
 
-// Filter prefetch request candidates by sub-prefetchers through the controller, record in sampler, and issue unfiltred prefetches.
+// Filter prefetch request candidates by sub-prefetchers through the controller, record in pf_sampler, and issue unfiltred prefetches.
 void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, uint64_t current_cycle, std::size_t prefetcher_id)
 {
   for (auto& candidate : candidates) {
-    const bool should_pf = _controller->should_prefetch(candidate.trigger_ip, prefetcher_id);
+    const bool should_pf = controller->should_prefetch(candidate.trigger_ip, prefetcher_id);
     bool will_pf = should_pf;
     if (!should_pf && (rand_u64() % pumpkin_params::NEGATIVE_LEAK_INV_PROB) == 0) {
       will_pf = true;
     }
 
-    // PUMPKIN: Record prefetch in sampler
-    if (_sampler.should_sample()) {
-      if (auto cap_evt = _sampler.record_prefetch(line_of(candidate.address), current_cycle, candidate.trigger_ip, prefetcher_id, will_pf);
+    const auto pf_line_addr = line_of(candidate.address);
+
+    // PUMPKIN: Record prefetch in pf_sampler
+    if (pf_sampler.should_sample(pf_line_addr)) {
+      if (auto cap_evt = pf_sampler.record_prefetch(pf_line_addr, current_cycle, candidate.trigger_ip, prefetcher_id, will_pf);
           cap_evt.has_value()) {
-        _controller->process_eviction_event(*cap_evt, current_cycle);
+        controller->process_eviction_event(*cap_evt, current_cycle);
       }
     }
 
@@ -70,17 +79,35 @@ void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>&
     if (candidate.notify_result) {
       candidate.notify_result(issued, !will_pf);
     }
+
+    auto& stats = _pf_stats.at(prefetcher_id);
+    stats.candidates++;
+    if (!will_pf) {
+      stats.filtered++;
+    } else if (issued) {
+      stats.issued++;
+    } else {
+      stats.not_issued++;
+    }
   }
 }
 
+////////////////////////////////////////////////////////////
+// PREFETCHER INITIALIZE
+////////////////////////////////////////////////////////////
+
 void pumpkin::prefetcher_initialize()
 {
-  // Initialize sampler with number of prefetchers
-  _sampler.init(_wrapped_prefetchers.size());
+  // Initialize pf_sampler with number of prefetchers
+  pf_sampler.init(_wrapped_prefetchers.size());
   for (auto& wrapped_prefetcher : _wrapped_prefetchers) {
     wrapped_prefetcher->initialize();
   }
 }
+
+////////////////////////////////////////////////////////////
+// PREFETCHER CYCLE OPERATE
+////////////////////////////////////////////////////////////
 
 void pumpkin::prefetcher_cycle_operate()
 {
@@ -95,6 +122,11 @@ void pumpkin::prefetcher_cycle_operate()
 
 }
 
+
+////////////////////////////////////////////////////////////
+// PREFETCHER CACHE OPERATE
+////////////////////////////////////////////////////////////
+
 uint32_t pumpkin::prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit, bool useful_prefetch, access_type type,
                                           uint32_t metadata_in)
 {
@@ -102,13 +134,13 @@ uint32_t pumpkin::prefetcher_cache_operate(champsim::address addr, champsim::add
   const champsim::address current_line_addr = line_of(addr);
 
   // PUMPKIN: Positive training for demand access 
-  if (auto access_evt = _sampler.notify_demand_access(current_line_addr, current_cycle); access_evt.has_value()) {
-    assert(_controller != nullptr);
-    _controller->process_eviction_event(*access_evt, current_cycle);
+  if (auto access_evt = pf_sampler.notify_demand_access(current_line_addr, current_cycle); access_evt.has_value()) {
+    assert(controller != nullptr);
+    controller->process_eviction_event(*access_evt, current_cycle);
   }
 
   uint32_t metadata = metadata_in;
-  assert(_controller != nullptr);
+  assert(controller != nullptr);
 
 // SUB-PREFETCHER HANDOFF
   for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id) {
@@ -120,6 +152,10 @@ uint32_t pumpkin::prefetcher_cache_operate(champsim::address addr, champsim::add
   return metadata;
 }
 
+////////////////////////////////////////////////////////////
+// PREFETCHER CACHE FILL
+////////////////////////////////////////////////////////////
+
 uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr,
                                        uint32_t metadata_in)
 {
@@ -127,19 +163,26 @@ uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long w
 
   // PUMPKIN: Notify cache fill of a prefetched line
   if (prefetch) {
-    _sampler.notify_cache_fill(line_of(addr), cycle);
+#if PUMPKIN_DELAYED_LATE_PREFETCHES
+    if (auto fill_evt = pf_sampler.notify_cache_fill(line_of(addr), cycle); fill_evt.has_value()) {
+      assert(controller != nullptr);
+      controller->process_eviction_event(*fill_evt, fill_evt->entry.demand_timestamp);
+    }
+#else
+    pf_sampler.notify_cache_fill(line_of(addr), cycle);
+#endif
   }
 
-  // PUMPKIN: Notify cache eviction to sampler 
+  // PUMPKIN: Notify cache eviction to pf_sampler 
   if (evicted_addr != champsim::address{}) {
-    if (auto evict_evt = _sampler.notify_cache_evict(line_of(evicted_addr)); evict_evt.has_value()) {
-      assert(_controller != nullptr);
-      _controller->process_eviction_event(*evict_evt, cycle);
+    if (auto evict_evt = pf_sampler.notify_cache_evict(line_of(evicted_addr)); evict_evt.has_value()) {
+      assert(controller != nullptr);
+      controller->process_eviction_event(*evict_evt, cycle);
     }
   }
 
   uint32_t metadata = metadata_in;
-  assert(_controller != nullptr);
+  assert(controller != nullptr);
 
   // SUB-PREFETCHER HANDOFF
   for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id) {
@@ -149,4 +192,61 @@ uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long w
   }
 
   return metadata;
+}
+
+////////////////////////////////////////////////////////////
+// PREFETCHER FINAL STATS
+////////////////////////////////////////////////////////////
+
+void pumpkin::prefetcher_final_stats()
+{
+  const auto pct = [](uint64_t num, uint64_t denom) -> double {
+    return denom == 0 ? 0.0 : (static_cast<double>(num) * 100.0) / static_cast<double>(denom);
+  };
+
+  const uint64_t total_candidates =
+      std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0},
+                      [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.candidates; });
+  const uint64_t total_filtered =
+      std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0},
+                      [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.filtered; });
+  const uint64_t total_issued =
+      std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0},
+                      [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.issued; });
+  const uint64_t total_not_issued =
+      std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0},
+                      [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.not_issued; });
+
+  std::cout << "================================================" << std::endl;
+  std::cout << "PUMPKIN Prefetch Candidate Stats" << std::endl;
+  std::cout << "  Total candidates: " << total_candidates << std::endl;
+  std::cout << std::fixed << std::setprecision(2);
+  std::cout << "  Issued:   " << total_issued << " (" << pct(total_issued, total_candidates) << "%)" << std::endl;
+  std::cout << "  Filtered: " << total_filtered << " (" << pct(total_filtered, total_candidates) << "%)" << std::endl;
+  std::cout << "  Selected but not issued: " << total_not_issued << " (" << pct(total_not_issued, total_candidates) << "%)"
+            << std::endl;
+
+  std::cout << std::endl << "  Candidate source breakdown:" << std::endl;
+  for (std::size_t prefetcher_id = 0; prefetcher_id < _pf_stats.size(); ++prefetcher_id) {
+    const auto& stats = _pf_stats[prefetcher_id];
+    std::cout << "    " << sub_prefetcher_name(prefetcher_id) << ": " << stats.candidates << " ("
+              << pct(stats.candidates, total_candidates) << "%)" << std::endl;
+  }
+
+  std::cout << std::endl << "  Issued breakdown by source:" << std::endl;
+  for (std::size_t prefetcher_id = 0; prefetcher_id < _pf_stats.size(); ++prefetcher_id) {
+    const auto& stats = _pf_stats[prefetcher_id];
+    std::cout << "    " << sub_prefetcher_name(prefetcher_id) << ": " << stats.issued << " ("
+              << pct(stats.issued, total_issued) << "% of issued, " << pct(stats.issued, total_candidates)
+              << "% of candidates)" << std::endl;
+  }
+
+  std::cout << std::endl << "  Filtered breakdown by source:" << std::endl;
+  for (std::size_t prefetcher_id = 0; prefetcher_id < _pf_stats.size(); ++prefetcher_id) {
+    const auto& stats = _pf_stats[prefetcher_id];
+    std::cout << "    " << sub_prefetcher_name(prefetcher_id) << ": " << stats.filtered << " ("
+              << pct(stats.filtered, total_filtered) << "% of filtered, " << pct(stats.filtered, total_candidates)
+              << "% of candidates)" << std::endl;
+  }
+  std::cout << "================================================" << std::endl;
 }

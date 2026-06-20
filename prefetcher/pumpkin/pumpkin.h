@@ -9,7 +9,7 @@
 #include "controller/controller.hh"
 #include "modules.h"
 #include "pumpkin_parameters.hh"
-#include "sampler/sampler.hh"
+#include "pf_sampler/pf_sampler.hh"
 #include "wrapped_prefetcher.hh"
 
 struct pumpkin : public champsim::modules::prefetcher {
@@ -20,10 +20,21 @@ struct pumpkin : public champsim::modules::prefetcher {
                                     uint32_t metadata_in);
   uint32_t prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr, uint32_t metadata_in);
   void prefetcher_cycle_operate();
+  void prefetcher_final_stats();
 
 private:
-  Sampler _sampler{pumpkin_params::SAMPLER_SETS, pumpkin_params::SAMPLER_WAYS};
-  std::unique_ptr<Controller> _controller;
+  struct prefetch_candidate_stats {
+    uint64_t candidates{0};
+    uint64_t filtered{0};
+    uint64_t issued{0};
+    uint64_t not_issued{0}; // selected (will_pf) but prefetch_line declined
+  };
+
+  std::vector<prefetch_candidate_stats> _pf_stats;
+  static const char* sub_prefetcher_name(std::size_t prefetcher_id);
+
+  PfSampler pf_sampler{pumpkin_params::SAMPLER_SETS, pumpkin_params::SAMPLER_WAYS};
+  std::unique_ptr<Controller> controller;
   std::vector<std::unique_ptr<pumpkin_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
 
   uint64_t _rng_state{0xD1B54A32D192ED03ULL};
