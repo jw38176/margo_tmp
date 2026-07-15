@@ -1,21 +1,22 @@
 #ifndef PUMPKIN_PF_SAMPLER_H
 #define PUMPKIN_PF_SAMPLER_H
 
-// Set to 1 to defer positive training for late prefetches until cache fill
-// computes fill latency; set to 0 for immediate training on demand access.
-#define PUMPKIN_DELAYED_LATE_PREFETCHES 0
-
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
 
+#include "../_base_sampler/sampler.hh"
 #include "address.h"
 #include "msl/lru_table.h"
 
-class PfSampler
+class PfSampler : public Sampler
 {
 public:
+  // Set to true to defer positive training for late prefetches until cache fill
+  // computes fill latency; set to false for immediate training on demand access.
+  bool delay_subtimely_training = true;
+
   explicit PfSampler(std::size_t pf_sampler_sets, std::size_t pf_sampler_ways);
   ~PfSampler();
 
@@ -30,6 +31,7 @@ public:
     PfSamplerCapacity,
     CacheEvict,
     CacheHit,
+    LatePrefetch,
   };
 
   struct pf_sampler_entry
@@ -39,6 +41,7 @@ public:
     uint64_t fill_latency{0};                         // Time taken from prefetch request to cache fill 
     uint64_t first_request_timestamp{0};              // Timestamp of the first prefetch request for the pf_line_addr
     uint64_t demand_timestamp{0};                     // Timestamp of the demand access that consumed the prefetched line
+    champsim::address demand_pc{};                    // PC of the demand access that consumed the prefetched line
     std::vector<uint64_t> prefetch_timestamps;        // Length == _num_prefetchers
     std::vector<champsim::address> prefetch_src_pcs;  // Length == _num_prefetchers
 
@@ -51,12 +54,12 @@ public:
     auto index() const
     {
       using namespace champsim::data::data_literals;
-      return pf_line_addr.slice_upper<2_b>();
+      return pf_line_addr.slice_upper<6_b>();
     }
     auto tag() const
     {
       using namespace champsim::data::data_literals;
-      return pf_line_addr.slice_upper<2_b>();
+      return pf_line_addr.slice_upper<6_b>();
     }
   };
 
@@ -66,45 +69,32 @@ public:
     EvictionCause cause;
   };
 
-  bool should_sample(champsim::address pf_line_addr) const; // Address-gated by _train_ratio
-
   // Records a prefetch candidate. If inserting evicts an entry, returns a PfSamplerCapacity event; otherwise returns std::nullopt.
   std::optional<EvictionEvent> record_prefetch(champsim::address pf_line_addr, uint64_t cycle, champsim::address src_pc, std::size_t prefetcher_id,
                                                bool prefetched); // `prefetched` is false for a filtered prefetch request
 
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
-  // Updates pf_sampler entry when its prefetched line is filled into cache. If the
-  // line was already demanded while outstanding, returns a delayed CacheHit event.
-  std::optional<EvictionEvent> notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle);
-#else
   // Updates pf_sampler entry when its prefetched line is filled into cache.
-  void notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle);
-#endif
+  std::optional<PfSampler::EvictionEvent> notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle);
 
   // On demand cache access, returns CacheHit event and invalidates matching pf_sampler entry.
-  std::optional<EvictionEvent> notify_demand_access(champsim::address line_addr, uint64_t cycle);
+  std::optional<EvictionEvent> notify_demand_access(champsim::address line_addr, uint64_t cycle, champsim::address demand_pc);
 
   // On cache eviction, returns CacheEvict event for real prefetches that were still tracked.
   std::optional<EvictionEvent> notify_cache_evict(champsim::address line_addr);
+
+  uint64_t cache_hit_events() const { return _cache_hit_events; }
+  uint64_t late_prefetch_events() const { return _late_prefetch_events; }
 
 private:
   std::size_t _num_prefetchers{0};
 
   std::size_t _pf_sampler_sets;
   std::size_t _pf_sampler_ways;
-  static constexpr uint64_t MAX_TRAIN_RATIO = 1024;
-  static constexpr uint64_t MIN_TRAIN_RATIO = 2;
-  static constexpr uint64_t RETUNE_MIN_EVENTS = 400; // Minimum terminal events to tr`igger retuning
-  static constexpr uint64_t RETUNE_IMBALANCE = 2;    // Imbalance factor between pf_sampler and cache evictions
-
-  uint64_t _train_ratio{MIN_TRAIN_RATIO};
-
-  // Calibrate to L2 capacity
-  uint64_t _cache_evicts{0};
-  uint64_t _table_evicts{0};
-  void maybe_retune_train_ratio();
 
   champsim::msl::lru_table<pf_sampler_entry> _pf_sampler_table{_pf_sampler_sets, _pf_sampler_ways};
+
+  uint64_t _cache_hit_events{0};
+  uint64_t _late_prefetch_events{0};
 };
 
 #endif

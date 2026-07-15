@@ -30,11 +30,13 @@ inline constexpr int MID_DEGREE = 6;  // initial degree for every sub-prefetcher
 inline constexpr int HIGH_DEGREE = 10;
 inline constexpr int DEGREE_STEP = 2;
 
-// Congestion proxy thresholds on the average MSHR occupancy ratio. The original IPOP/UDC design uses
-// measured DRAM access latency as its congestion signal; the modular ChampSim cache model does not expose
-// DRAM latency to a prefetcher module, so MSHR pressure is used as a faithful, locally-available stand-in.
-inline constexpr double CONGESTION_HIGH = 0.75; // above this, throttle the least-useful prefetcher
-inline constexpr double CONGESTION_LOW = 0.40;  // below this, promote the most-useful / reactivate idle prefetchers
+// DRAM-latency congestion signal. The cache reports the measured average DRAM fill latency (in cycles);
+// it is compared against IDEAL_DRAM_TIME (an unloaded-DRAM reference) scaled by the factors below.
+// This is the original IPOP/UDC congestion signal (legacy knob: udc_ideal_dram_time), now available via
+// CACHE::get_dram_latency().
+inline constexpr float IDEAL_DRAM_TIME = 100.0F;    // reference unloaded DRAM latency, in cycles
+inline constexpr float DRAM_THROTTLE_FACTOR = 3.0F; // above IDEAL_DRAM_TIME * this, throttle the least-useful prefetcher
+inline constexpr float DRAM_PROMOTE_FACTOR = 1.5F;  // below IDEAL_DRAM_TIME * this, promote the most-useful / reactivate idle prefetchers
 
 } // namespace ipop_params
 

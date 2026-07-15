@@ -98,6 +98,10 @@ public:
     champsim::waitable<returned_value> data_promise{};
     uint32_t cpu;
 
+    // True when this fill's data was ultimately served by main memory (DRAM) rather than a cache hit
+    // below this cache. Captured in finish_packet from the returning response.
+    bool from_dram = false;
+
     access_type type;
     bool prefetch_from_this;
 
@@ -111,6 +115,9 @@ public:
     mshr_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued);
     static mshr_type merge(mshr_type predecessor, mshr_type successor);
   };
+
+  // set llc connection
+  void impl_setup_prefetcher_llc_connection(CACHE* llc_cache) const;
 
 private:
   bool try_hit(const tag_lookup_type& handle_pkt);
@@ -155,8 +162,24 @@ public:
   channel_type* lower_translate;
 
   uint32_t cpu = 0;
+
+  // Side-channel: instr_id of the access that is about to invoke the prefetcher.
+  // Set in try_hit immediately before impl_prefetcher_cache_operate so prefetchers
+  // can associate a demand access with its originating instruction.
+  uint64_t pref_trigger_instr_id = 0;
+
   std::string NAME;
   uint32_t NUM_SET, NUM_WAY, MSHR_SIZE;
+
+  uint32_t available_ways; // number of usable ways per set (for way partitioning)
+
+  std::pair<set_type::iterator, set_type::iterator> get_available_set_span(champsim::address address);
+  std::pair<set_type::const_iterator, set_type::const_iterator> get_available_set_span(champsim::address address) const;
+
+  bool set_available_ways(uint32_t new_available_ways);
+
+  uint32_t get_available_ways() const { return available_ways; }
+
   std::size_t PQ_SIZE;
   champsim::chrono::clock::duration HIT_LATENCY;
   champsim::chrono::clock::duration FILL_LATENCY;
@@ -194,6 +217,20 @@ public:
   [[nodiscard]] std::size_t get_mshr_size() const;
   [[nodiscard]] double get_mshr_occupancy_ratio() const;
 
+  // Average fill latency broken down by inferred fill source (see handle_fill). Because the channel
+  // response carries no fill-source info, DRAM vs LLC-hit is inferred from measured fill latency.
+  uint64_t hit_l3_latency{0};
+  uint64_t hit_dram_latency{0};
+  uint64_t hit_l3_count{0};
+  uint64_t hit_dram_count{0};
+  bool last_fill_from_dram_flag{false};
+
+  [[nodiscard]] float get_l3_latency() const;
+  [[nodiscard]] float get_dram_latency() const;
+  [[nodiscard]] uint64_t get_dram_count() const;
+  [[nodiscard]] bool last_fill_from_dram() const;
+  void reset_latency_stats();
+
   [[nodiscard]] std::vector<std::size_t> get_rq_occupancy() const;
   [[nodiscard]] std::vector<std::size_t> get_rq_size() const;
   [[nodiscard]] std::vector<double> get_rq_occupancy_ratio() const;
@@ -208,6 +245,11 @@ public:
 
   [[deprecated("Use get_set_index() instead.")]] [[nodiscard]] uint64_t get_set(uint64_t address) const;
   [[deprecated("This function should not be used to access the blocks directly.")]] [[nodiscard]] uint64_t get_way(uint64_t address, uint64_t set) const;
+
+  [[nodiscard]] bool contains_nonprefetched_line(champsim::address addr) const;
+
+  [[nodiscard]] bool in_cache(champsim::address addr) const;
+  [[nodiscard]] bool in_mshr(champsim::address addr) const;
 
   long invalidate_entry(champsim::address inval_addr);
   bool prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata);
@@ -234,6 +276,7 @@ public:
     virtual void impl_prefetcher_cycle_operate() = 0;
     virtual void impl_prefetcher_final_stats() = 0;
     virtual void impl_prefetcher_branch_operate(champsim::address ip, uint8_t branch_type, champsim::address branch_target) = 0;
+    virtual void impl_setup_prefetcher_llc_connection(CACHE* llc_cache) = 0;
   };
 
   struct replacement_module_concept {
@@ -268,6 +311,17 @@ public:
     void impl_prefetcher_cycle_operate() final;
     void impl_prefetcher_final_stats() final;
     void impl_prefetcher_branch_operate(champsim::address ip, uint8_t branch_type, champsim::address branch_target) final;
+    void impl_setup_prefetcher_llc_connection(CACHE* llc_cache) final
+    {
+      [[maybe_unused]] auto process_one = [&](auto& p) {
+        using namespace champsim::modules;
+        if constexpr (prefetcher::has_set_llc_reference<decltype(p), CACHE*>) {
+          p.set_llc_reference(llc_cache);
+        }
+      };
+
+      std::apply([&](auto&... p) { (..., process_one(p)); }, intern_);
+    }
   };
 
   template <typename... Rs>
@@ -318,7 +372,7 @@ public:
   template <typename... Ps, typename... Rs>
   explicit CACHE(champsim::cache_builder<champsim::cache_builder_module_type_holder<Ps...>, champsim::cache_builder_module_type_holder<Rs...>> b)
       : champsim::operable(b.m_clock_period), upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()),
-        NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
+        NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), available_ways(b.get_num_ways()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
         FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
         prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), pref_activate_mask(b.m_pref_act_mask),
         pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)), repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))

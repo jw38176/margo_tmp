@@ -187,6 +187,19 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
     op.initialize();
   }
 
+  // Connect prefetchers that request it to the LLC so they can drive LLC way partitioning.
+  {
+    auto caches = env.cache_view();
+    auto llc_it = std::find_if(std::begin(caches), std::end(caches),
+                               [](const CACHE& cache) { return cache.NAME.find("LLC") != std::string::npos; });
+    if (llc_it != std::end(caches)) {
+      CACHE& llc = *llc_it;
+      for (CACHE& cache : caches) {
+        cache.impl_setup_prefetcher_llc_connection(&llc);
+      }
+    }
+  }
+
   champsim::chrono::clock global_clock;
   std::vector<phase_stats> results;
   for (auto phase : phases) {

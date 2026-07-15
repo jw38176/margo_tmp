@@ -6,7 +6,7 @@
 #include <limits>
 #include <numeric>
 
-#include "../pumpkin/sub_prefetcher_config.hh"
+#include "../sub_prefetcher/sub_prefetcher_config.hh"
 #include "cache.h"
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -40,8 +40,10 @@ ipop::ipop(CACHE* cache) : prefetcher(cache)
   const std::size_t n = _wrapped_prefetchers.size();
   _current_state.assign(n, ipop_params::MID_DEGREE);
   _issue_budget.assign(n, ipop_params::MID_DEGREE);
-  _useful_count.assign(n, 0);
-  _pollution_count.assign(n, 0);
+  _useful_l3.assign(n, 0);
+  _useful_dram.assign(n, 0);
+  _pollution_l3.assign(n, 0);
+  _pollution_dram.assign(n, 0);
   _fill_count.assign(n, 0);
   _pf_stats.assign(n, {});
 }
@@ -100,18 +102,26 @@ void ipop::note_useful(champsim::address demand_addr)
   const uint64_t block = block_of(demand_addr);
   auto& entry = _pf_table[pf_index(block)];
   if (entry.valid && entry.tag == pf_tag(block)) {
-    _useful_count[entry.prefetcher_id]++;
+    if (entry.from_dram) {
+      _useful_dram[entry.prefetcher_id]++;
+    } else {
+      _useful_l3[entry.prefetcher_id]++;
+    }
     _pf_stats[entry.prefetcher_id].useful++;
     entry.valid = false; // credit a prefetched line only once
   }
 }
 
-void ipop::note_pollution_miss(champsim::address demand_addr)
+void ipop::note_pollution_miss(champsim::address demand_addr, bool from_dram)
 {
   const uint64_t block = block_of(demand_addr);
   auto& entry = _poll_table[poll_index(block)];
   if (entry.valid && entry.tag == poll_tag(block)) {
-    _pollution_count[entry.prefetcher_id]++;
+    if (from_dram) {
+      _pollution_dram[entry.prefetcher_id]++;
+    } else {
+      _pollution_l3[entry.prefetcher_id]++;
+    }
     _pf_stats[entry.prefetcher_id].pollution++;
     entry.valid = false;
   }
@@ -122,11 +132,19 @@ void ipop::note_pollution_miss(champsim::address demand_addr)
 void ipop::run_control()
 {
   const std::size_t n = _wrapped_prefetchers.size();
-  const double congestion = (_congestion_samples > 0) ? (_congestion_sum / static_cast<double>(_congestion_samples)) : 0.0;
 
+  // Real measured latencies from the cache, used both to weight each prefetcher's net effect and to
+  // gauge DRAM congestion (replacing the earlier MSHR-occupancy proxy).
+  const float lat_l3 = intern_->get_l3_latency();
+  const float lat_dram = intern_->get_dram_latency();
+
+  // Latency-weighted net effect: benefit of useful prefetches minus cost of pollution, each event
+  // charged the latency of the level it touched.
   std::vector<int64_t> effect(n, 0);
   for (std::size_t i = 0; i < n; ++i) {
-    effect[i] = static_cast<int64_t>(_useful_count[i]) - static_cast<int64_t>(_pollution_count[i]);
+    const float useful_effect = static_cast<float>(_useful_l3[i]) * lat_l3 + static_cast<float>(_useful_dram[i]) * lat_dram;
+    const float poll_effect = static_cast<float>(_pollution_l3[i]) * lat_l3 + static_cast<float>(_pollution_dram[i]) * lat_dram;
+    effect[i] = static_cast<int64_t>(useful_effect - poll_effect);
   }
 
   // Find the most-useful active prefetcher (to promote) and the least-useful active one (to demote).
@@ -148,11 +166,13 @@ void ipop::run_control()
     }
   }
 
-  // Congestion-driven single-step adjustment: relieve pressure by demoting the worst, or spend slack
-  // by promoting the best.
-  if (congestion > ipop_params::CONGESTION_HIGH && min_index >= 0) {
+  // DRAM-latency-driven single-step adjustment: relieve pressure by demoting the worst when DRAM is
+  // heavily loaded, or spend slack by promoting the best when DRAM latency is near-ideal.
+  const bool dram_congested = lat_dram > ipop_params::IDEAL_DRAM_TIME * ipop_params::DRAM_THROTTLE_FACTOR;
+  const bool dram_relaxed = lat_dram < ipop_params::IDEAL_DRAM_TIME * ipop_params::DRAM_PROMOTE_FACTOR;
+  if (dram_congested && min_index >= 0) {
     _current_state[min_index] -= ipop_params::DEGREE_STEP;
-  } else if (congestion < ipop_params::CONGESTION_LOW && max_index >= 0) {
+  } else if (dram_relaxed && max_index >= 0) {
     _current_state[max_index] += ipop_params::DEGREE_STEP;
   }
 
@@ -161,7 +181,7 @@ void ipop::run_control()
     if (_current_state[i] < 0) {
       _current_state[i]++; // unblock countdown
     } else if (_current_state[i] == 0) {
-      if (congestion < ipop_params::CONGESTION_LOW) {
+      if (dram_relaxed) {
         _current_state[i] = ipop_params::LOW_DEGREE; // reactivate during a calm phase
       }
     } else {
@@ -175,16 +195,17 @@ void ipop::run_control()
 
   _phase_count++;
   reset_phase_counters();
+  intern_->reset_latency_stats();
 }
 
 void ipop::reset_phase_counters()
 {
-  std::fill(_useful_count.begin(), _useful_count.end(), 0);
-  std::fill(_pollution_count.begin(), _pollution_count.end(), 0);
+  std::fill(_useful_l3.begin(), _useful_l3.end(), 0);
+  std::fill(_useful_dram.begin(), _useful_dram.end(), 0);
+  std::fill(_pollution_l3.begin(), _pollution_l3.end(), 0);
+  std::fill(_pollution_dram.begin(), _pollution_dram.end(), 0);
   std::fill(_fill_count.begin(), _fill_count.end(), 0);
   _demand_count = 0;
-  _congestion_sum = 0.0;
-  _congestion_samples = 0;
 }
 
 // ─── Candidate handling ─────────────────────────────────────────────────────────
@@ -233,6 +254,10 @@ void ipop::prefetcher_initialize()
 
   std::cout << "IPOP degree controller: " << _wrapped_prefetchers.size() << " sub-prefetchers, phase-length=" << ipop_params::PHASE_LENGTH
             << ", degree levels [" << ipop_params::LOW_DEGREE << "," << ipop_params::MID_DEGREE << "," << ipop_params::HIGH_DEGREE << "]" << std::endl;
+  for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id)
+  {
+    std::cout << "    [" << prefetcher_id << "] " << sub_prefetcher_name(prefetcher_id) << std::endl;
+  }
 }
 
 void ipop::prefetcher_cycle_operate()
@@ -249,17 +274,15 @@ uint32_t ipop::prefetcher_cache_operate(champsim::address addr, champsim::addres
   const bool is_demand = (type != access_type::PREFETCH);
   if (is_demand) {
     _demand_count++;
-    _congestion_sum += intern_->get_mshr_occupancy_ratio();
-    _congestion_samples++;
 
     // Grant each sub-prefetcher a fresh per-request budget equal to its current degree.
     replenish_budgets();
 
     if (cache_hit) {
       note_useful(addr); // demand hit may be on a line a sub-prefetcher brought in
-    } else {
-      note_pollution_miss(addr); // demand miss may be on a line a prefetch evicted
     }
+    // A demand miss's pollution is attributed at fill time (prefetcher_cache_fill), where the refill's
+    // source latency (LLC vs DRAM) is known.
 
     if (_demand_count >= ipop_params::PHASE_LENGTH) {
       run_control();
@@ -278,13 +301,17 @@ uint32_t ipop::prefetcher_cache_operate(champsim::address addr, champsim::addres
 
 uint32_t ipop::prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr, uint32_t metadata_in)
 {
-  // A prefetched line is being installed. Attribute its eviction victim to the issuing sub-prefetcher
-  // so a later demand miss on that victim can be charged back as pollution.
+  const bool from_dram = intern_->last_fill_from_dram();
+
   if (prefetch) {
+    // A prefetched line is being installed. Record its fill source so a later useful hit is charged
+    // the right latency, and attribute its eviction victim to the issuing sub-prefetcher so a later
+    // demand miss on that victim can be charged back as pollution.
     const uint64_t block = block_of(addr);
-    const auto& filled = _pf_table[pf_index(block)];
+    auto& filled = _pf_table[pf_index(block)];
     if (filled.valid && filled.tag == pf_tag(block)) {
       const std::size_t issuer = filled.prefetcher_id;
+      filled.from_dram = from_dram;
       _fill_count[issuer]++;
       if (evicted_addr != champsim::address{}) {
         const uint64_t evicted_block = block_of(evicted_addr);
@@ -294,6 +321,10 @@ uint32_t ipop::prefetcher_cache_fill(champsim::address addr, long set, long way,
         victim.prefetcher_id = issuer;
       }
     }
+  } else {
+    // A demand line is being refilled. If it was previously evicted by a prefetch, charge that
+    // prefetcher pollution at the latency of this refill's source.
+    note_pollution_miss(addr, from_dram);
   }
 
   uint32_t metadata = metadata_in;

@@ -74,10 +74,13 @@ class channel
     champsim::address v_address{};
     champsim::address data{};
     uint32_t pf_metadata = 0;
+    // True when the data was ultimately served by main memory (DRAM) rather than a cache hit below the
+    // requester. Set by the memory controller, propagated up through each cache's MSHR/fill.
+    bool from_dram = false;
     std::vector<uint64_t> instr_depend_on_me{};
 
-    response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps)
-        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps)
+    response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps, bool from_dram_ = false)
+        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), from_dram(from_dram_), instr_depend_on_me(deps)
     {
     }
     explicit response(request req) : response(req.address, req.v_address, req.data, req.pf_metadata, req.instr_depend_on_me) {}

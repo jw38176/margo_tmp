@@ -5,12 +5,14 @@
 #include <memory>
 #include <vector>
 
+#include "../sub_prefetcher/wrapped_prefetcher.hh"
+#include "_rand/rand.hh"
 #include "address.h"
 #include "controller/controller.hh"
+#include "crit_sampler/crit_sampler.hh"
 #include "modules.h"
-#include "pumpkin_parameters.hh"
 #include "pf_sampler/pf_sampler.hh"
-#include "wrapped_prefetcher.hh"
+#include "pumpkin_parameters.hh"
 
 struct pumpkin : public champsim::modules::prefetcher {
   explicit pumpkin(CACHE* cache);
@@ -21,6 +23,14 @@ struct pumpkin : public champsim::modules::prefetcher {
   uint32_t prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr, uint32_t metadata_in);
   void prefetcher_cycle_operate();
   void prefetcher_final_stats();
+
+  // Simulator-provided LLC reference. Forwarded to the controller so training
+  // can check whether an evicted line still resides in the LLC.
+  void set_llc_reference(CACHE* llc);
+
+  // Called by the criticality ROB-head bridge when a tracked instruction first
+  // reaches the head of the ROB.
+  void on_rob_head(uint64_t instr_id, uint64_t cycle);
 
 private:
   struct prefetch_candidate_stats {
@@ -34,11 +44,10 @@ private:
   static const char* sub_prefetcher_name(std::size_t prefetcher_id);
 
   PfSampler pf_sampler{pumpkin_params::SAMPLER_SETS, pumpkin_params::SAMPLER_WAYS};
+  CritSampler crit_sampler{pumpkin_params::CRIT_SAMPLER_SETS, pumpkin_params::CRIT_SAMPLER_WAYS};
   std::unique_ptr<Controller> controller;
   std::vector<std::unique_ptr<pumpkin_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
 
-  uint64_t _rng_state{0xD1B54A32D192ED03ULL};
-  uint64_t rand_u64();
   void process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, uint64_t current_cycle, std::size_t prefetcher_id);
 };
 

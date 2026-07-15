@@ -6,14 +6,14 @@
 #include <memory>
 #include <vector>
 
-#include "../pumpkin/wrapped_prefetcher.hh"
+#include "../sub_prefetcher/wrapped_prefetcher.hh"
 #include "address.h"
 #include "alecto_parameters.hh"
 #include "modules.h"
 
 // Alecto: a per-PC, accuracy-driven controller for a set of sub-prefetchers.
 //
-// Alecto runs Pumpkin's sub-prefetcher set (see ../pumpkin/sub_prefetcher_config.hh) and learns,
+// Alecto runs the configured sub-prefetcher set (see ../sub_prefetcher/sub_prefetcher_config.hh) and learns,
 // per program counter, *which* of those sub-prefetchers to trust and *how aggressively* (degree).
 // Three tables cooperate:
 //
@@ -40,6 +40,14 @@ struct alecto : public champsim::modules::prefetcher {
   uint32_t prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr, uint32_t metadata_in);
   void prefetcher_cycle_operate();
   void prefetcher_final_stats();
+
+  // Forward the simulator-provided LLC reference to any sub-prefetcher that drives LLC way partitioning.
+  void set_llc_reference(CACHE* llc)
+  {
+    for (auto& wrapped_prefetcher : _wrapped_prefetchers) {
+      wrapped_prefetcher->set_llc_reference(llc);
+    }
+  }
 
 private:
   // ─── Tables ────────────────────────────────────────────────────────────────────
@@ -75,13 +83,15 @@ private:
 
   // ─── Lifetime per-sub-prefetcher accounting (printed in final stats) ─────────────
   struct prefetch_candidate_stats {
-    uint64_t candidates{0}; // candidates seen from the sub-prefetcher
-    uint64_t produced{0};   // passed the degree gate (these enter the accuracy sample)
-    uint64_t issued{0};     // prefetch_line() accepted
-    uint64_t throttled{0};  // dropped by the degree budget
-    uint64_t deduped{0};    // already covered by the sandbox (recently prefetched)
-    uint64_t not_issued{0}; // passed gate + dedup but prefetch_line() declined
-    uint64_t useful{0};     // later confirmed by a demand hit (counted against produced)
+    uint64_t candidates{0};      // candidates seen from the sub-prefetcher
+    uint64_t produced{0};        // passed the degree gate (these enter the accuracy sample)
+    uint64_t issued{0};          // prefetch_line() accepted
+    uint64_t throttled{0};       // dropped by the degree budget
+    uint64_t deduped{0};         // already covered by the sandbox (recently prefetched)
+    uint64_t not_issued{0};      // passed gate + dedup but prefetch_line() declined
+    uint64_t useful{0};          // later confirmed by a demand hit (counted against produced)
+    uint64_t demand_trained{0};  // demands routed to this sub-prefetcher (a training occurrence)
+    uint64_t demand_filtered{0}; // demands withheld because this sub-prefetcher was blocked (IB state)
   };
 
   std::size_t _n{0}; // number of sub-prefetchers
@@ -94,6 +104,11 @@ private:
   // Per-demand issue budget, replenished from the demanding PC's allocation entry and drained as
   // sub-prefetchers (including their lookahead continuations) emit candidates.
   std::vector<int> _issue_budget;
+
+  // Per-demand routing mask (dynamic demand request allocation): true if the sub-prefetcher is
+  // identified as suitable (UI/IA state) for the current PC and may receive the request; false if it is
+  // blocked (IB state) and the request must be withheld so it is neither trained nor allowed to issue.
+  std::vector<char> _demand_allowed;
 
   std::vector<prefetch_candidate_stats> _pf_stats;
   uint64_t _phase_count{0};
@@ -109,6 +124,7 @@ private:
 
   // Demand-path helpers.
   void access(champsim::address ip, champsim::address addr); // degree budget + usefulness credit
+  void compute_allocation(champsim::address ip);             // decide which sub-prefetchers get this demand
   void check_sandbox(champsim::address addr);                // confirm useful prefetches on a demand hit
   void confirm(champsim::address ip, std::size_t prefetcher_id);
   void account_demand(champsim::address ip); // demands++, phase rollover, dead handling

@@ -5,7 +5,7 @@
 #include <iostream>
 #include <numeric>
 
-#include "../pumpkin/sub_prefetcher_config.hh"
+#include "../sub_prefetcher/sub_prefetcher_config.hh"
 #include "cache.h"
 
 namespace
@@ -33,6 +33,7 @@ alecto::alecto(CACHE* cache) : prefetcher(cache)
   }
 
   _issue_budget.assign(_n, alecto_params::BASE_DEGREE);
+  _demand_allowed.assign(_n, 1);
   _pf_stats.assign(_n, {});
 }
 
@@ -87,6 +88,25 @@ void alecto::access(champsim::address ip, champsim::address addr)
   }
 
   check_sandbox(addr);
+}
+
+// Dynamic demand request allocation (paper §IV-B / §IV-E). Decide which sub-prefetchers this PC's demand
+// is routed to: Alecto emits an identifier only for sub-prefetchers in the UI (state 0) or IA (state > 0)
+// states, so a sub-prefetcher in the IB (blocked, state < 0) state receives nothing. Withholding the
+// request means the blocked sub-prefetcher is neither trained on an out-of-field access nor given a
+// chance to generate from it, which is what keeps its table from being polluted. A PC with no allocation
+// entry defaults to "all allowed" (every sub-prefetcher starts in UI).
+void alecto::compute_allocation(champsim::address ip)
+{
+  std::fill(_demand_allowed.begin(), _demand_allowed.end(), static_cast<char>(1));
+
+  const uint64_t pc = ip.to<uint64_t>();
+  const auto& alloc = _allocation_table[pc_index(pc)];
+  if (alloc.valid && alloc.tag == pc_tag(pc)) {
+    for (std::size_t i = 0; i < _n; ++i) {
+      _demand_allowed[i] = static_cast<char>(alloc.states[i] >= 0);
+    }
+  }
 }
 
 // A demand that lands on a recently prefetched block confirms the issuing sub-prefetcher(s).
@@ -344,6 +364,9 @@ void alecto::prefetcher_initialize()
 
   std::cout << "ALECTO controller: " << _n << " sub-prefetchers, sample/alloc tables=" << alecto_params::ALLOCATION_TABLE_SIZE
             << ", sandbox=" << alecto_params::SANDBOX_TABLE_SIZE << ", phase=" << alecto_params::PERIOD << " demands" << std::endl;
+  for (std::size_t prefetcher_id = 0; prefetcher_id < _n; ++prefetcher_id) {
+    std::cout << "    [" << prefetcher_id << "] " << sub_prefetcher_name(prefetcher_id) << std::endl;
+  }
 }
 
 void alecto::prefetcher_cycle_operate()
@@ -363,8 +386,24 @@ uint32_t alecto::prefetcher_cache_operate(champsim::address addr, champsim::addr
     account_demand(ip);   // phase / dead bookkeeping for the demanding PC
   }
 
+  // Dynamic demand request allocation: route the request only to the sub-prefetchers Alecto has
+  // identified as suitable for this PC. Blocked (IB-state) sub-prefetchers are skipped entirely — they
+  // do not see the access, so they neither train on it nor produce candidates from it. This is the DDRA
+  // property from the paper (§IV-B/E) that reduces prefetcher-table conflicts, as opposed to only gating
+  // the emitted prefetches after the fact.
+  compute_allocation(ip);
+
   uint32_t metadata = metadata_in;
   for (std::size_t prefetcher_id = 0; prefetcher_id < _n; ++prefetcher_id) {
+    if (!_demand_allowed[prefetcher_id]) {
+      if (is_demand) {
+        _pf_stats[prefetcher_id].demand_filtered++;
+      }
+      continue;
+    }
+    if (is_demand) {
+      _pf_stats[prefetcher_id].demand_trained++;
+    }
     auto result = _wrapped_prefetchers[prefetcher_id]->cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
     metadata = result.metadata;
     process_candidates(result.prefetches, prefetcher_id);
@@ -403,10 +442,16 @@ void alecto::prefetcher_final_stats()
   const uint64_t total_deduped = sum(&prefetch_candidate_stats::deduped);
   const uint64_t total_not_issued = sum(&prefetch_candidate_stats::not_issued);
   const uint64_t total_useful = sum(&prefetch_candidate_stats::useful);
+  const uint64_t total_trained = sum(&prefetch_candidate_stats::demand_trained);
+  const uint64_t total_filtered = sum(&prefetch_candidate_stats::demand_filtered);
+  const uint64_t total_demand_routes = total_trained + total_filtered;
 
   std::cout << "================================================" << std::endl;
   std::cout << "ALECTO Prefetch Candidate Stats" << std::endl;
   std::cout << "  Learning phases: " << _phase_count << ", dead-PC resets: " << _dead_events << std::endl;
+  std::cout << std::fixed << std::setprecision(2);
+  std::cout << "  Demand allocations (training occurrences): trained " << total_trained << ", filtered " << total_filtered << " ("
+            << pct(total_filtered, total_demand_routes) << "% of demands withheld from blocked sub-prefetchers)" << std::endl;
   std::cout << "  Total candidates: " << total_candidates << std::endl;
   std::cout << std::fixed << std::setprecision(2);
   std::cout << "  Issued:    " << total_issued << " (" << pct(total_issued, total_candidates) << "%)" << std::endl;
@@ -415,11 +460,15 @@ void alecto::prefetcher_final_stats()
   std::cout << "  Selected but not issued: " << total_not_issued << " (" << pct(total_not_issued, total_candidates) << "%)" << std::endl;
   std::cout << "  Confirmed useful: " << total_useful << " (" << pct(total_useful, total_produced) << "% of produced)" << std::endl;
 
-  std::cout << std::endl << "  Per sub-prefetcher (candidates | produced | issued | useful | throttled | deduped):" << std::endl;
+  std::cout << std::endl
+            << "  Per sub-prefetcher (trained | filtered | candidates | produced | issued | useful | throttled | deduped):" << std::endl;
   for (std::size_t prefetcher_id = 0; prefetcher_id < _pf_stats.size(); ++prefetcher_id) {
     const auto& stats = _pf_stats[prefetcher_id];
-    std::cout << "    " << sub_prefetcher_name(prefetcher_id) << ": cand=" << stats.candidates << " | produced=" << stats.produced
-              << " | issued=" << stats.issued << " (" << pct(stats.issued, total_issued) << "% of issued)"
+    const uint64_t routes = stats.demand_trained + stats.demand_filtered;
+    std::cout << "    " << sub_prefetcher_name(prefetcher_id) << ": trained=" << stats.demand_trained << " | filtered=" << stats.demand_filtered
+              << " (" << pct(stats.demand_filtered, routes) << "%)"
+              << " | cand=" << stats.candidates << " | produced=" << stats.produced << " | issued=" << stats.issued << " ("
+              << pct(stats.issued, total_issued) << "% of issued)"
               << " | useful=" << stats.useful << " (acc " << pct(stats.useful, stats.produced) << "%)"
               << " | throttled=" << stats.throttled << " | deduped=" << stats.deduped << std::endl;
   }

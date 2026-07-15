@@ -3,7 +3,7 @@
 
 #include <memory>
 
-#include "../pumpkin/wrapped_prefetcher.hh"
+#include "../sub_prefetcher/wrapped_prefetcher.hh"
 
 class CACHE;
 

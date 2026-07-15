@@ -1,37 +1,15 @@
 #include "pf_sampler.hh"
 
-namespace
-{
-uint64_t hash_line_addr(champsim::address pf_line_addr)
-{
-  uint64_t x = pf_line_addr.to<uint64_t>();
-  x ^= x >> 33;
-  x *= 0xff51afd7ed558ccdULL;
-  x ^= x >> 33;
-  x *= 0xc4ceb9fe1a85ec53ULL;
-  x ^= x >> 33;
-  return x;
-}
-} // namespace
-
 PfSampler::PfSampler(std::size_t pf_sampler_sets, std::size_t pf_sampler_ways) : _pf_sampler_sets(pf_sampler_sets), _pf_sampler_ways(pf_sampler_ways) {}
 
 PfSampler::~PfSampler() = default;
 
 void PfSampler::init(std::size_t num_prefetchers)
 {
-  _train_ratio = MIN_TRAIN_RATIO;
+  Sampler::init();
   _num_prefetchers = num_prefetchers;
-  _cache_evicts = 0;
-  _table_evicts = 0;
-}
-
-bool PfSampler::should_sample(champsim::address pf_line_addr) const
-{
-  if (_train_ratio <= 1)
-    return true;
-
-  return (hash_line_addr(pf_line_addr) % _train_ratio) == 0;
+  _cache_hit_events = 0;
+  _late_prefetch_events = 0;
 }
 
 std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::address pf_line_addr, uint64_t cycle, champsim::address src_pc,
@@ -45,14 +23,32 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
   {
     pf_sampler_entry updated = hit.value();
 
+    if (updated.demand_timestamp != 0)
+    {
+      // Prefetch after demand access - do not record this prefetch
+      // This is a late prefetch, waiting for fill latency before positive training.
+      return std::nullopt;
+    }
+
+    if (updated.fill_latency != 0)
+    {
+      // Prefetch after cache fill - do not record this prefetch
+      // This is a redundant prefetch.
+      return std::nullopt;
+    }
+
     if (!updated.useful)
     {
-      // Update mid-lifecycle entry with new contributor info.
-      if (prefetcher_id < updated.prefetch_timestamps.size())
+      // Record new prefetch from a different prefetcher for this line
+      if (updated.prefetch_timestamps[prefetcher_id] == 0)
       {
         updated.prefetch_timestamps[prefetcher_id] = cycle;
         updated.prefetch_src_pcs[prefetcher_id] = src_pc;
       }
+
+      // Replace a previous prefetch from the same prefetcher if not prefetched
+      // TODO
+
       if (prefetched)
       {
         updated.prefetched = true;
@@ -61,18 +57,21 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
       return std::nullopt;
     }
 
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
-    if (updated.valid)
+    if (delay_subtimely_training)
     {
-      // A late prefetch was already consumed by demand and is waiting for fill
-      // latency before positive training. Preserve that pending terminal event.
-      return std::nullopt;
-    }
+      if (updated.valid)
+      {
+        // A late prefetch was already consumed by demand and is waiting for fill
+        // latency before positive training. Preserve that pending terminal event.
+        return std::nullopt;
+      }
 
-    // useful==true and valid==false means we've already trained for this entry.
-#else
-    // useful==true means valid==false and we've already trained for this entry.
-#endif
+      // useful==true and valid==false means we've already trained for this entry.
+    }
+    else
+    {
+      // useful==true means valid==false and we've already trained for this entry.
+    }
     // Overwrite it with a fresh entry below.
   }
 
@@ -80,9 +79,10 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
   e.pf_line_addr = pf_line_addr;
   e.fill_latency = 0;
   e.first_request_timestamp = cycle;
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
-  e.demand_timestamp = 0;
-#endif
+  if (delay_subtimely_training)
+  {
+    e.demand_timestamp = 0;
+  }
   e.prefetch_timestamps.assign(_num_prefetchers, 0);
   e.prefetch_src_pcs.assign(_num_prefetchers, champsim::address{});
   e.prefetched = prefetched;
@@ -107,15 +107,10 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
   // Only calibrate on terminal events for prefetched entries that were filled into cache.
   if (victim.prefetched && victim.in_cache && victim.valid && !victim.useful)
   {
-    _table_evicts++;
-    maybe_retune_train_ratio();
+    report_sampler_table_evict();
   }
 
-  if (!victim.valid || !victim.prefetched
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
-      || victim.useful
-#endif
-  )
+  if (!victim.valid || !victim.prefetched || (delay_subtimely_training && victim.useful))
   {
     return std::nullopt;
   }
@@ -124,22 +119,14 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
   return EvictionEvent{victim, EvictionCause::PfSamplerCapacity};
 }
 
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
 std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle)
-#else
-void PfSampler::notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle)
-#endif
 {
   pf_sampler_entry probe{};
   probe.pf_line_addr = pf_line_addr;
 
   auto hit = _pf_sampler_table.check_hit(probe);
   if (!hit.has_value())
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
     return std::nullopt;
-#else
-    return;
-#endif
 
   pf_sampler_entry updated = hit.value();
 
@@ -151,24 +138,24 @@ void PfSampler::notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle
 
   updated.in_cache = true;
 
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
-  // Delayed CacheHit event for late prefetches
-  if (updated.useful && updated.valid)
+  if (delay_subtimely_training)
   {
-    updated.valid = false;
-    pf_sampler_entry snapshot = updated;
-    _pf_sampler_table.invalidate(probe);
-    return EvictionEvent{snapshot, EvictionCause::CacheHit};
+    // Delayed CacheHit event for late prefetches
+    if (updated.useful && updated.valid)
+    {
+      updated.valid = false;
+      pf_sampler_entry snapshot = updated;
+      _pf_sampler_table.invalidate(probe);
+      _late_prefetch_events++;
+      return EvictionEvent{snapshot, EvictionCause::LatePrefetch};
+    }
   }
-#endif
 
   _pf_sampler_table.fill(updated);
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
   return std::nullopt;
-#endif
 }
 
-std::optional<PfSampler::EvictionEvent> PfSampler::notify_demand_access(champsim::address line_addr, uint64_t cycle)
+std::optional<PfSampler::EvictionEvent> PfSampler::notify_demand_access(champsim::address line_addr, uint64_t cycle, champsim::address demand_pc)
 {
   pf_sampler_entry probe{};
   probe.pf_line_addr = line_addr;
@@ -185,22 +172,26 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_demand_access(champsim
 
   // Mark entry as used by demand to prevent double-counting.
   entry.useful = true;
+  entry.demand_pc = demand_pc;
 
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
-  entry.demand_timestamp = cycle;
-
-  if (!entry.in_cache)
+  if (delay_subtimely_training)
   {
-    // This is a late prefetch: keep the entry until cache_fill computes latency.
-    _pf_sampler_table.fill(entry);
-    return std::nullopt;
-  }
+    entry.demand_timestamp = cycle;
 
-  entry.valid = false;
-#else
-  entry.valid = false;
-  entry.in_cache = true;
-#endif
+    if (!entry.in_cache)
+    {
+      // This is a late prefetch: keep the entry until cache_fill computes latency.
+      _pf_sampler_table.fill(entry);
+      return std::nullopt;
+    }
+
+    entry.valid = false;
+  }
+  else
+  {
+    entry.valid = false;
+    entry.in_cache = true;
+  }
 
   // Snapshot the consumed entry for the controller, then invalidate the
   // pf_sampler slot so the LRU can reclaim it without producing an extra
@@ -208,6 +199,7 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_demand_access(champsim
   pf_sampler_entry snapshot = entry;
   _pf_sampler_table.invalidate(probe);
 
+  _cache_hit_events++;
   return EvictionEvent{snapshot, EvictionCause::CacheHit};
 }
 
@@ -232,30 +224,9 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_evict(champsim::
   entry.in_cache = false;
   entry.valid = false;
 
-  _cache_evicts++;
-  maybe_retune_train_ratio();
+  report_cache_evict();
 
   _pf_sampler_table.invalidate(probe);
 
   return EvictionEvent{entry, EvictionCause::CacheEvict};
-}
-
-void PfSampler::maybe_retune_train_ratio()
-{
-  // PfSampler is thrashing faster than the cache: track fewer prefetches.
-  if (_table_evicts > RETUNE_MIN_EVENTS && _table_evicts > _cache_evicts * RETUNE_IMBALANCE && _train_ratio < MAX_TRAIN_RATIO)
-  {
-    _train_ratio *= 2;
-    _cache_evicts = 0;
-    _table_evicts = 0;
-    return;
-  }
-
-  // Cache is churning much faster than the pf_sampler: track a denser sample.
-  if (_cache_evicts > RETUNE_MIN_EVENTS && _cache_evicts > _table_evicts * RETUNE_IMBALANCE && _train_ratio > MIN_TRAIN_RATIO)
-  {
-    _train_ratio /= 2;
-    _cache_evicts = 0;
-    _table_evicts = 0;
-  }
 }

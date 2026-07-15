@@ -26,6 +26,7 @@
 
 #include "cache.h"
 #include "champsim.h"
+#include "criticality_rob_head_bridge.h"
 #include "deadlock.h"
 #include "instruction.h"
 #include "util/span.h"
@@ -721,6 +722,26 @@ long O3_CPU::retire_rob()
     for (auto dreg : rob_it->destination_registers) {
       reg_allocator.retire_dest_register(dreg);
     }
+  }
+
+  // Notify any registered criticality sampler when an instruction first hits the
+  // head of the ROB, rather than at retirement. Every instruction in the retire
+  // span passes through the head this cycle, and the instruction at retire_end
+  // becomes the new stalling head this cycle iff it is not completed (a completed
+  // retire_end only means RETIRE_WIDTH bandwidth was exhausted, so it has not yet
+  // reached the head). The reached_rob_head flag ensures a load stalling at the
+  // head across many cycles is signalled only once, on its first head cycle.
+  const auto head_cycle = static_cast<uint64_t>(current_time.time_since_epoch() / clock_period);
+  auto head_end = std::next(std::begin(ROB), std::distance(retire_begin, retire_end));
+  for (auto rob_it = std::begin(ROB); rob_it != head_end; ++rob_it) {
+    if (!rob_it->reached_rob_head) {
+      rob_it->reached_rob_head = true;
+      champsim::criticality_rob_head_bridge::notify_rob_head(cpu, rob_it->instr_id, head_cycle);
+    }
+  }
+  if (head_end != std::end(ROB) && !head_end->completed && !head_end->reached_rob_head) {
+    head_end->reached_rob_head = true;
+    champsim::criticality_rob_head_bridge::notify_rob_head(cpu, head_end->instr_id, head_cycle);
   }
 
   auto retire_count = std::distance(retire_begin, retire_end);

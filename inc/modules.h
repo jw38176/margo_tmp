@@ -135,6 +135,11 @@ struct prefetcher : public bound_to<CACHE> {
   static auto branch_operate_member_impl(long) -> std::false_type;
 
   template <typename T, typename... Args>
+  static auto set_llc_reference_member_impl(int) -> decltype(std::declval<T>().set_llc_reference(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto set_llc_reference_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
   constexpr static bool has_initialize = decltype(initiailize_memory_impl<T, Args...>(0))::value;
 
   template <typename T, typename... Args>
@@ -151,6 +156,9 @@ struct prefetcher : public bound_to<CACHE> {
 
   template <typename T, typename... Args>
   constexpr static bool has_branch_operate = decltype(branch_operate_member_impl<T, Args...>(0))::value;
+
+  template <typename T, typename... Args>
+  constexpr static bool has_set_llc_reference = decltype(set_llc_reference_member_impl<T, Args...>(0))::value;
 };
 
 struct replacement : public bound_to<CACHE> {

@@ -1,13 +1,15 @@
 #include "pumpkin.h"
 
 #include <cassert>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <numeric>
 
+#include "../sub_prefetcher/sub_prefetcher_config.hh"
 #include "cache.h"
-#include "sub_prefetcher_config.hh"
+#include "criticality_rob_head_bridge.h"
 
 namespace
 {
@@ -29,7 +31,8 @@ pumpkin::pumpkin(CACHE* cache) : prefetcher(cache)
   for (const auto& sub_prefetcher : pumpkin_wrappers::SUB_PREFETCHERS) {
     _wrapped_prefetchers.emplace_back(sub_prefetcher.make(cache));
   }
-  controller = std::make_unique<Controller>(_wrapped_prefetchers.size(), pumpkin_params::FILTER_TABLE_SIZE);
+  controller = std::make_unique<Controller>(
+      _wrapped_prefetchers.size(), pumpkin_params::FILTER_TABLE_SIZE, [](std::size_t prefetcher_id) { return sub_prefetcher_name(prefetcher_id); });
   _pf_stats.assign(_wrapped_prefetchers.size(), {});
 }
 
@@ -38,16 +41,11 @@ const char* pumpkin::sub_prefetcher_name(std::size_t prefetcher_id)
   return pumpkin_wrappers::sub_prefetcher_name(prefetcher_id);
 }
 
-uint64_t pumpkin::rand_u64()
+void pumpkin::set_llc_reference(CACHE* llc)
 {
-  uint64_t x = _rng_state;
-  x ^= x << 13;
-  x ^= x >> 7;
-  x ^= x << 17;
-  _rng_state = x;
-  return x;
+  if (controller != nullptr)
+    controller->set_llc(llc);
 }
-
 
 // Filter prefetch request candidates by sub-prefetchers through the controller, record in pf_sampler, and issue unfiltred prefetches.
 void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, uint64_t current_cycle, std::size_t prefetcher_id)
@@ -61,12 +59,22 @@ void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>&
 
     const auto pf_line_addr = line_of(candidate.address);
 
+    // PUMPKIN: Skip Redundant Prefetches
+    const bool redundant_pf = intern_->in_cache(pf_line_addr) || intern_->in_mshr(pf_line_addr);
+
     // PUMPKIN: Record prefetch in pf_sampler
-    if (pf_sampler.should_sample(pf_line_addr)) {
+    if (!redundant_pf && pf_sampler.should_sample(pf_line_addr))
+    {
       if (auto cap_evt = pf_sampler.record_prefetch(pf_line_addr, current_cycle, candidate.trigger_ip, prefetcher_id, will_pf);
           cap_evt.has_value()) {
-        controller->process_eviction_event(*cap_evt, current_cycle);
+        controller->process_eviction_event(*cap_evt, current_cycle, intern_->get_l3_latency(), intern_->get_dram_latency());
       }
+    }
+
+    // PUMPKIN: Record prefetch in crit_sampler
+    if (crit_sampler.should_sample(pf_line_addr) && will_pf)
+    {
+      crit_sampler.record_prefetch(pf_line_addr, current_cycle);
     }
 
     // ISSUE PREFETCH
@@ -92,6 +100,16 @@ void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>&
   }
 }
 
+// PUMPKIN: Process a tracked instruction reaching the head of the ROB
+void pumpkin::on_rob_head(uint64_t instr_id, uint64_t cycle)
+{
+  if (auto crit_evt = crit_sampler.notify_rob_head(instr_id, cycle); crit_evt.has_value())
+  {
+    assert(controller != nullptr);
+    controller->process_criticality_event(*crit_evt);
+  }
+}
+
 ////////////////////////////////////////////////////////////
 // PREFETCHER INITIALIZE
 ////////////////////////////////////////////////////////////
@@ -100,8 +118,29 @@ void pumpkin::prefetcher_initialize()
 {
   // Initialize pf_sampler with number of prefetchers
   pf_sampler.init(_wrapped_prefetchers.size());
+  crit_sampler.init();
+
+  // Register to receive ROB-head notifications for this core.
+  champsim::criticality_rob_head_bridge::register_rob_head_sink(intern_->cpu, [this](uint64_t instr_id, uint64_t cycle) { on_rob_head(instr_id, cycle); });
+
   for (auto& wrapped_prefetcher : _wrapped_prefetchers) {
     wrapped_prefetcher->initialize();
+  }
+
+  // Gate Triangel's training on the controller's Critical(Y) * (1 - CU(Y)) decision.
+  for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id)
+  {
+    if (std::strcmp(sub_prefetcher_name(prefetcher_id), "triangel") == 0)
+    {
+      _wrapped_prefetchers[prefetcher_id]->set_training_gate([this](champsim::address ip, bool is_miss)
+                                                             { return controller->should_track_with_triangel(ip, is_miss); });
+    }
+  }
+
+  std::cout << "PUMPKIN controller: " << _wrapped_prefetchers.size() << " sub-prefetchers" << std::endl;
+  for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id)
+  {
+    std::cout << "    [" << prefetcher_id << "] " << sub_prefetcher_name(prefetcher_id) << std::endl;
   }
 }
 
@@ -133,20 +172,36 @@ uint32_t pumpkin::prefetcher_cache_operate(champsim::address addr, champsim::add
   const uint64_t current_cycle = cycle_of(intern_);
   const champsim::address current_line_addr = line_of(addr);
 
-  // PUMPKIN: Positive training for demand access 
-  if (auto access_evt = pf_sampler.notify_demand_access(current_line_addr, current_cycle); access_evt.has_value()) {
+  // PUMPKIN: Positive training for demand access
+  if (auto access_evt = pf_sampler.notify_demand_access(current_line_addr, current_cycle, ip); access_evt.has_value())
+  {
     assert(controller != nullptr);
-    controller->process_eviction_event(*access_evt, current_cycle);
+    controller->process_eviction_event(*access_evt, current_cycle, intern_->get_l3_latency(), intern_->get_dram_latency());
+  }
+
+  // PUMPKIN: Criticality tracking for demand loads. instr_id is supplied by the
+  // cache via a side-channel set immediately before this call.
+  if (type == access_type::LOAD && crit_sampler.should_sample(current_line_addr))
+  {
+    crit_sampler.notify_demand_access(current_line_addr, current_cycle, ip, intern_->pref_trigger_instr_id, cache_hit != 0);
   }
 
   uint32_t metadata = metadata_in;
   assert(controller != nullptr);
 
-// SUB-PREFETCHER HANDOFF
-  for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id) {
-    auto result = _wrapped_prefetchers[prefetcher_id]->cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
-    metadata = result.metadata;
-    process_candidates(result.prefetches, current_cycle, prefetcher_id);
+  // SUB-PREFETCHER HANDOFF: invoke in fixed ID order (metadata chaining preserved),
+  // then process candidates in descending absolute-accuracy rank at the demand PC.
+  const std::size_t num_prefetchers = _wrapped_prefetchers.size();
+  std::vector<pumpkin_wrappers::WrappedPrefetchResult> results(num_prefetchers);
+  for (std::size_t prefetcher_id = 0; prefetcher_id < num_prefetchers; ++prefetcher_id)
+  {
+    results[prefetcher_id] = _wrapped_prefetchers[prefetcher_id]->cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    metadata = results[prefetcher_id].metadata;
+  }
+
+  for (std::size_t prefetcher_id : controller->rank_prefetchers_by_absolute_accuracy(ip))
+  {
+    process_candidates(results[prefetcher_id].prefetches, current_cycle, prefetcher_id);
   }
 
   return metadata;
@@ -161,24 +216,27 @@ uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long w
 {
   const uint64_t cycle = cycle_of(intern_);
 
-  // PUMPKIN: Notify cache fill of a prefetched line
-  if (prefetch) {
-#if PUMPKIN_DELAYED_LATE_PREFETCHES
-    if (auto fill_evt = pf_sampler.notify_cache_fill(line_of(addr), cycle); fill_evt.has_value()) {
+  if (prefetch)
+  {
+    if (auto fill_evt = pf_sampler.notify_cache_fill(line_of(addr), cycle); fill_evt.has_value())
+    {
       assert(controller != nullptr);
-      controller->process_eviction_event(*fill_evt, fill_evt->entry.demand_timestamp);
+      controller->process_eviction_event(*fill_evt, fill_evt->entry.demand_timestamp, intern_->get_l3_latency(), intern_->get_dram_latency());
     }
-#else
-    pf_sampler.notify_cache_fill(line_of(addr), cycle);
-#endif
   }
+
+  // PUMPKIN: Criticality tracking observes every fill (demand or prefetch).
+  crit_sampler.notify_cache_fill(line_of(addr), cycle);
 
   // PUMPKIN: Notify cache eviction to pf_sampler 
   if (evicted_addr != champsim::address{}) {
     if (auto evict_evt = pf_sampler.notify_cache_evict(line_of(evicted_addr)); evict_evt.has_value()) {
       assert(controller != nullptr);
-      controller->process_eviction_event(*evict_evt, cycle);
+      controller->process_eviction_event(*evict_evt, cycle, intern_->get_l3_latency(), intern_->get_dram_latency());
     }
+
+    // PUMPKIN: Tune criticality sampling rate
+    crit_sampler.notify_cache_evict(line_of(evicted_addr));
   }
 
   uint32_t metadata = metadata_in;
@@ -200,6 +258,8 @@ uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long w
 
 void pumpkin::prefetcher_final_stats()
 {
+  champsim::criticality_rob_head_bridge::unregister_rob_head_sink(intern_->cpu);
+
   const auto pct = [](uint64_t num, uint64_t denom) -> double {
     return denom == 0 ? 0.0 : (static_cast<double>(num) * 100.0) / static_cast<double>(denom);
   };
@@ -248,5 +308,60 @@ void pumpkin::prefetcher_final_stats()
               << pct(stats.filtered, total_filtered) << "% of filtered, " << pct(stats.filtered, total_candidates)
               << "% of candidates)" << std::endl;
   }
+  const uint64_t total_critical_loads = controller->critical_loads_recorded();
+  const uint64_t total_non_critical_loads = controller->non_critical_loads_recorded();
+  const uint64_t total_recorded_loads = total_critical_loads + total_non_critical_loads;
+
+  std::cout << std::endl << "PUMPKIN Criticality Load Stats" << std::endl;
+  std::cout << "  Total recorded loads: " << total_recorded_loads << std::endl;
+  std::cout << "  Critical:     " << total_critical_loads << " (" << pct(total_critical_loads, total_recorded_loads) << "%)" << std::endl;
+  std::cout << "  Non-critical: " << total_non_critical_loads << " (" << pct(total_non_critical_loads, total_recorded_loads) << "%)" << std::endl;
+
+  // Sampler sizing. Each sampler owns an adaptive gate that only sparsens (raises
+  // the train ratio above its floor) when its fixed-size table evicts live
+  // entries faster than the cache evicts lines, i.e. when the table cannot keep
+  // up at the current sampling density. A ratio that never leaves the floor means
+  // the table is large enough (with headroom) for this workload; one driven
+  // upward means the working set outgrows the table at full density. The prefetch
+  // and criticality samplers tune independently from their own eviction events.
+  const auto print_sampler_sizing = [](const char* name, const Sampler::SamplerStats& s)
+  {
+    const char* sizing_verdict;
+    if (s.peak_train_ratio <= s.min_train_ratio)
+      sizing_verdict = "yes - gate stayed at its floor, table has headroom at max density";
+    else if (s.train_ratio <= s.min_train_ratio)
+      sizing_verdict = "borderline - transient pressure, but settled back at the floor";
+    else
+      sizing_verdict = "no - sustained table pressure, running below max density";
+
+    std::cout << std::endl << "PUMPKIN " << name << " Sizing Stats" << std::endl;
+    std::cout << "  Final train ratio:  1-in-" << s.train_ratio << " (floor 1-in-" << s.min_train_ratio << ", ceiling 1-in-" << s.max_train_ratio << ")"
+              << std::endl;
+    std::cout << "  Peak train ratio:   1-in-" << s.peak_train_ratio << std::endl;
+    std::cout << "  Retunes:            " << s.retune_up << " sparser (table pressure), " << s.retune_down << " denser (table headroom)" << std::endl;
+    std::cout << "  Calibration evicts: " << s.table_evicts_total << " sampler-table, " << s.cache_evicts_total << " cache" << std::endl;
+    std::cout << "  Large enough?       " << sizing_verdict << std::endl;
+  };
+
+  print_sampler_sizing("Prefetch Sampler", pf_sampler.stats());
+  print_sampler_sizing("Criticality Sampler", crit_sampler.stats());
+  std::cout << "  ROB heads w/o fill: " << crit_sampler.rob_heads_without_fill() << std::endl;
+
+  const uint64_t cache_hit_events = pf_sampler.cache_hit_events();
+  const uint64_t late_prefetch_events = pf_sampler.late_prefetch_events();
+  const uint64_t positive_terminal_events = cache_hit_events + late_prefetch_events;
+
+  std::cout << std::endl << "PUMPKIN Prefetch Sampler Terminal Event Stats" << std::endl;
+  std::cout << "  CacheHit:     " << cache_hit_events << " (" << pct(cache_hit_events, positive_terminal_events) << "%)" << std::endl;
+  std::cout << "  LatePrefetch: " << late_prefetch_events << " (" << pct(late_prefetch_events, positive_terminal_events) << "%)" << std::endl;
+  if (cache_hit_events == 0)
+    std::cout << "  LatePrefetch/CacheHit ratio: n/a (no CacheHit events)" << std::endl;
+  else
+    std::cout << "  LatePrefetch/CacheHit ratio: " << std::fixed << std::setprecision(4)
+              << (static_cast<double>(late_prefetch_events) / static_cast<double>(cache_hit_events)) << std::endl;
+
+  controller->print_filter_table_stats(std::cout, [](std::size_t prefetcher_id) { return sub_prefetcher_name(prefetcher_id); });
+  controller->print_coverage_filter_stats(std::cout);
+
   std::cout << "================================================" << std::endl;
 }

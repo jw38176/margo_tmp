@@ -7,7 +7,7 @@
 
 #include "address.h"
 #include "modules.h"
-#include "../pumpkin/wrapped_prefetcher.hh"
+#include "../sub_prefetcher/wrapped_prefetcher.hh"
 
 struct naive : public champsim::modules::prefetcher {
   explicit naive(CACHE* cache);
@@ -18,6 +18,14 @@ struct naive : public champsim::modules::prefetcher {
   uint32_t prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr, uint32_t metadata_in);
   void prefetcher_cycle_operate();
   void prefetcher_final_stats();
+
+  // Forward the simulator-provided LLC reference to any sub-prefetcher that drives LLC way partitioning.
+  void set_llc_reference(CACHE* llc)
+  {
+    for (auto& wrapped_prefetcher : _wrapped_prefetchers) {
+      wrapped_prefetcher->set_llc_reference(llc);
+    }
+  }
 
 private:
   struct prefetch_candidate_stats {

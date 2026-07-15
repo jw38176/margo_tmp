@@ -5,10 +5,10 @@
 #include <numeric>
 
 #include "cache.h"
-#include "../pumpkin/sub_prefetcher_config.hh"
+#include "../sub_prefetcher/sub_prefetcher_config.hh"
 
 
-// USES PUMPKIN'S SET OF SUB-PREFETCHERS
+// USES THE CONFIGURED SET OF SUB-PREFETCHERS
 naive::naive(CACHE* cache) : prefetcher(cache)
 {
   for (const auto& sub_prefetcher : pumpkin_wrappers::SUB_PREFETCHERS) {

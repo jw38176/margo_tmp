@@ -10,8 +10,10 @@ lru::lru(CACHE* cache, long sets, long ways) : replacement(cache), NUM_WAY(ways)
 long lru::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, const champsim::cache_block* current_set, champsim::address ip,
                       champsim::address full_addr, access_type type)
 {
+  const long active_ways = std::max<long>(1, intern_->available_ways);
+
   auto begin = std::next(std::begin(last_used_cycles), set * NUM_WAY);
-  auto end = std::next(begin, NUM_WAY);
+  auto end = std::next(begin, active_ways);
 
   // Find the way whose last use cycle is most distant
   auto victim = std::min_element(begin, end);

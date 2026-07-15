@@ -37,7 +37,7 @@ CACHE::CACHE(CACHE&& other)
 
       upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)), lower_translate(std::move(other.lower_translate)),
 
-      cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
+      cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), available_ways(other.available_ways), PQ_SIZE(other.PQ_SIZE),
       HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
       MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
       pref_activate_mask(std::move(other.pref_activate_mask)),
@@ -64,7 +64,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->NAME = std::move(other.NAME);
   this->NUM_SET = other.NUM_SET;
   this->NUM_WAY = other.NUM_WAY;
-  ;
+  this->available_ways = other.available_ways;
   this->MSHR_SIZE = other.MSHR_SIZE;
   ;
   this->PQ_SIZE = other.PQ_SIZE;
@@ -90,6 +90,12 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   repl_module_pimpl->bind(this);
 
   return *this;
+}
+
+void CACHE::impl_setup_prefetcher_llc_connection(CACHE* llc_cache) const
+{
+  // using pref module connect to llc
+  pref_module_pimpl->impl_setup_prefetcher_llc_connection(llc_cache);
 }
 
 CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref, bool skip)
@@ -171,11 +177,22 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   cpu = fill_mshr.cpu;
 
   // find victim
-  auto [set_begin, set_end] = get_set_span(fill_mshr.address);
+  auto [set_begin, set_end] = get_available_set_span(fill_mshr.address);
   auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
   if (way == set_end) {
-    way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
-                                                fill_mshr.address, fill_mshr.type));
+    auto victim_idx = impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip, fill_mshr.address,
+                                       fill_mshr.type);
+    if (victim_idx >= static_cast<long>(NUM_WAY)) {
+      // Bypass sentinel: the replacement policy declined to allocate. Leave
+      // way == set_end so the line is not inserted (no eviction/writeback).
+      way = set_end;
+    } else {
+      // Real victim: keep it inside the available (partitioned) ways.
+      if (victim_idx >= static_cast<long>(available_ways)) {
+        victim_idx = available_ways - 1;
+      }
+      way = std::next(set_begin, victim_idx);
+    }
   }
   assert(set_begin <= way);
   assert(way <= set_end);
@@ -217,6 +234,20 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     evicting_address = module_address(*way);
   }
 
+  // Fill source (DRAM vs a cache hit below this level) is carried on the returning response and stored
+  // in the MSHR by finish_packet. Accumulate the measured fill latency into the matching bucket.
+  const auto miss_latency = (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
+  last_fill_from_dram_flag = fill_mshr.from_dram;
+  if (!warmup) {
+    if (last_fill_from_dram_flag) {
+      hit_dram_latency += static_cast<uint64_t>(miss_latency);
+      ++hit_dram_count;
+    } else {
+      hit_l3_latency += static_cast<uint64_t>(miss_latency);
+      ++hit_l3_count;
+    }
+  }
+
   auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill_mshr), get_set_index(fill_mshr.address), way_idx,
                                                   (fill_mshr.type == access_type::PREFETCH), evicting_address, fill_mshr.data_promise->pf_metadata);
   impl_replacement_cache_fill(fill_mshr.cpu, get_set_index(fill_mshr.address), way_idx, module_address(fill_mshr), fill_mshr.ip, evicting_address,
@@ -239,7 +270,8 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     sim_stats.total_miss_latency_cycles += (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
-  response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
+  response_type response{fill_mshr.address,   fill_mshr.v_address,          fill_mshr.data_promise->data,
+                         metadata_thru,        fill_mshr.instr_depend_on_me, fill_mshr.from_dram};
   for (auto* ret : fill_mshr.to_return) {
     ret->push_back(response);
   }
@@ -252,7 +284,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   cpu = handle_pkt.cpu;
 
   // access cache
-  auto [set_begin, set_end] = get_set_span(handle_pkt.address);
+  auto [set_begin, set_end] = get_available_set_span(handle_pkt.address);
   auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
   const auto hit = (way != set_end);
   const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
@@ -265,6 +297,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   auto metadata_thru = handle_pkt.pf_metadata;
   if (should_activate_prefetcher(handle_pkt)) {
+    pref_trigger_instr_id = handle_pkt.instr_id;
     metadata_thru = impl_prefetcher_cache_operate(module_address(handle_pkt), handle_pkt.ip, hit, useful_prefetch, handle_pkt.type, metadata_thru);
   }
 
@@ -552,18 +585,91 @@ auto CACHE::get_set_span(champsim::address address) const -> std::pair<set_type:
   return get_span(std::cbegin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
 }
 
+auto CACHE::get_available_set_span(champsim::address address) -> std::pair<set_type::iterator, set_type::iterator>
+{
+  const auto set_idx = get_set_index(address);
+  assert(set_idx < NUM_SET);
+
+  auto begin = std::next(std::begin(block), static_cast<set_type::difference_type>(set_idx * NUM_WAY));
+  auto end = std::next(begin, available_ways); // restrict to the available ways
+  return {begin, end};
+}
+
+auto CACHE::get_available_set_span(champsim::address address) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
+{
+  const auto set_idx = get_set_index(address);
+  assert(set_idx < NUM_SET);
+
+  auto begin = std::next(std::cbegin(block), static_cast<set_type::difference_type>(set_idx * NUM_WAY));
+  auto end = std::next(begin, available_ways); // restrict to the available ways
+  return {begin, end};
+}
+
+bool CACHE::set_available_ways(uint32_t new_available_ways)
+{
+  new_available_ways = std::clamp<uint32_t>(new_available_ways, 1, NUM_WAY);
+
+  if (new_available_ways == available_ways) {
+    return true;
+  }
+
+  // Increasing associativity does not require moving or clearing lines.
+  if (new_available_ways > available_ways) {
+    available_ways = new_available_ways;
+    return true;
+  }
+
+  // Shrinking associativity: invalidate all lines in the disabled ways. ChampSim is trace-driven and
+  // does not model data values for correctness, so dropping dirty lines without writeback has no
+  // functional impact and lets the repartition always apply immediately.
+  for (uint32_t set = 0; set < NUM_SET; ++set) {
+    auto set_begin = std::next(std::begin(block), static_cast<set_type::difference_type>(set * NUM_WAY));
+
+    for (uint32_t way = new_available_ways; way < available_ways; ++way) {
+      auto& blk = *std::next(set_begin, static_cast<set_type::difference_type>(way));
+
+      blk.valid = false;
+      blk.dirty = false;
+      blk.prefetch = false;
+    }
+  }
+
+  available_ways = new_available_ways;
+  return true;
+}
+
 // LCOV_EXCL_START exclude deprecated function
 uint64_t CACHE::get_way(uint64_t address, uint64_t /*unused set index*/) const
 {
   champsim::address intern_addr{address};
-  auto [begin, end] = get_set_span(intern_addr);
+  auto [begin, end] = get_available_set_span(intern_addr);
   return static_cast<uint64_t>(std::distance(begin, std::find_if(begin, end, matches_address(champsim::address{address}))));
 }
 // LCOV_EXCL_STOP
 
+bool CACHE::contains_nonprefetched_line(champsim::address addr) const
+{
+  auto [set_begin, set_end] = get_set_span(addr);
+  auto matcher = matches_address(addr);
+
+  auto found = std::find_if(set_begin, set_end, [&](const auto& blk) { return blk.valid && matcher(blk); });
+
+  return found != set_end && !found->prefetch;
+}
+
+bool CACHE::in_cache(champsim::address addr) const
+{
+  auto [set_begin, set_end] = get_set_span(addr);
+  auto matcher = matches_address(addr);
+
+  return std::any_of(set_begin, set_end, [&](const auto& blk) { return blk.valid && matcher(blk); });
+}
+
+bool CACHE::in_mshr(champsim::address addr) const { return std::any_of(std::begin(MSHR), std::end(MSHR), matches_address(addr)); }
+
 long CACHE::invalidate_entry(champsim::address inval_addr)
 {
-  auto [begin, end] = get_set_span(inval_addr);
+  auto [begin, end] = get_available_set_span(inval_addr);
   auto inv_way = std::find_if(begin, end, matches_address(inval_addr));
 
   if (inv_way != end) {
@@ -622,6 +728,7 @@ void CACHE::finish_packet(const response_type& packet)
   // MSHR holds the most updated information about this request
   mshr_type::returned_value finished_value{packet.data, packet.pf_metadata};
   mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
+  mshr_entry->from_dram = packet.from_dram;
   if constexpr (champsim::debug_print) {
     fmt::print("[{}_MSHR] finish_packet instr_id: {} address: {} data: {} type: {} current: {}\n", this->NAME, mshr_entry->instr_id, mshr_entry->address,
                mshr_entry->data_promise->data, access_type_names.at(champsim::to_underlying(mshr_entry->type)), current_time.time_since_epoch() / clock_period);
@@ -785,6 +892,22 @@ std::vector<double> occupancy_ratio_vec(std::vector<std::size_t> occ, std::vecto
 } // namespace
 
 double CACHE::get_mshr_occupancy_ratio() const { return ::occupancy_ratio(get_mshr_occupancy(), get_mshr_size()); }
+
+float CACHE::get_l3_latency() const { return hit_l3_count ? static_cast<float>(hit_l3_latency) / static_cast<float>(hit_l3_count) : 0.0F; }
+
+float CACHE::get_dram_latency() const { return hit_dram_count ? static_cast<float>(hit_dram_latency) / static_cast<float>(hit_dram_count) : 0.0F; }
+
+uint64_t CACHE::get_dram_count() const { return hit_dram_count; }
+
+bool CACHE::last_fill_from_dram() const { return last_fill_from_dram_flag; }
+
+void CACHE::reset_latency_stats()
+{
+  hit_l3_latency = 0;
+  hit_dram_latency = 0;
+  hit_l3_count = 0;
+  hit_dram_count = 0;
+}
 
 std::vector<double> CACHE::get_rq_occupancy_ratio() const { return ::occupancy_ratio_vec(get_rq_occupancy(), get_rq_size()); }
 

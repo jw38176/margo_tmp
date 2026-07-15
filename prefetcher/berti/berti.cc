@@ -475,7 +475,7 @@ void BertiTable::add(uint64_t tag, int64_t delta)
     }
   }
 
-  uint8_t dx_conf = 100;
+  uint64_t dx_conf = 100;
   int dx_remove = -1;
   for (std::size_t i = 0; i < entry->deltas.size(); i++) {
     if (entry->deltas[i].delta == 0) {
@@ -576,7 +576,7 @@ void BertiTable::find_and_update(uint64_t latency, uint64_t tag, uint64_t cycle,
   uint64_t tags[HISTORY_TABLE_WAYS];
   uint64_t addr[HISTORY_TABLE_WAYS];
 
-  uint16_t num_on_time = historyt->get(latency, tag, line_addr, tags, addr, cycle);
+  uint16_t num_on_time = historyt->get(static_cast<uint32_t>(latency), tag, line_addr, tags, addr, cycle);
 
   for (uint32_t i = 0; i < num_on_time; i++) {
     if (i == 0) {
@@ -863,7 +863,7 @@ void berti::prefetcher_final_stats()
 
   std::cout << "BERTI AVERAGE_ISSUED: ";
   if (average_num != 0) {
-    std::cout << ((1.0 * average_issued) / average_num);
+    std::cout << (static_cast<double>(average_issued) / static_cast<double>(average_num));
   } else {
     std::cout << 0;
   }
