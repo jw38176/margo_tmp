@@ -610,7 +610,7 @@ bool CACHE::contains_nonprefetched_line(champsim::address addr) const
 
 bool CACHE::in_cache(champsim::address addr) const
 {
-  auto [set_begin, set_end] = get_set_span(addr);
+  auto [set_begin, set_end] = get_available_set_span(addr);
   auto matcher = matches_address(addr);
 
   return std::any_of(set_begin, set_end, [&](const auto& blk) { return blk.valid && matcher(blk); });
