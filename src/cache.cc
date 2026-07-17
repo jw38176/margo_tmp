@@ -180,19 +180,17 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   auto [set_begin, set_end] = get_available_set_span(fill_mshr.address);
   auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
   if (way == set_end) {
-    auto victim_idx = impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip, fill_mshr.address,
-                                       fill_mshr.type);
-    if (victim_idx >= static_cast<long>(NUM_WAY)) {
-      // Bypass sentinel: the replacement policy declined to allocate. Leave
-      // way == set_end so the line is not inserted (no eviction/writeback).
-      way = set_end;
-    } else {
-      // Real victim: keep it inside the available (partitioned) ways.
-      if (victim_idx >= static_cast<long>(available_ways)) {
-        victim_idx = available_ways - 1;
-      }
-      way = std::next(set_begin, victim_idx);
-    }
+     // way = std::next(set_begin, impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
+     //                                             fill_mshr.address, fill_mshr.type));
+ 
+     // find and make sure victim in available ways
+     auto victim_idx = impl_find_victim(fill_mshr.cpu, fill_mshr.instr_id, get_set_index(fill_mshr.address), &*set_begin, fill_mshr.ip,
+                                       fill_mshr.address, fill_mshr.type);
+ 
+     assert(victim_idx >= 0);
+     assert(victim_idx < static_cast<long>(available_ways));
+ 
+     way = std::next(set_begin, victim_idx);    
   }
   assert(set_begin <= way);
   assert(way <= set_end);
@@ -585,59 +583,6 @@ auto CACHE::get_set_span(champsim::address address) const -> std::pair<set_type:
   return get_span(std::cbegin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
 }
 
-auto CACHE::get_available_set_span(champsim::address address) -> std::pair<set_type::iterator, set_type::iterator>
-{
-  const auto set_idx = get_set_index(address);
-  assert(set_idx < NUM_SET);
-
-  auto begin = std::next(std::begin(block), static_cast<set_type::difference_type>(set_idx * NUM_WAY));
-  auto end = std::next(begin, available_ways); // restrict to the available ways
-  return {begin, end};
-}
-
-auto CACHE::get_available_set_span(champsim::address address) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
-{
-  const auto set_idx = get_set_index(address);
-  assert(set_idx < NUM_SET);
-
-  auto begin = std::next(std::cbegin(block), static_cast<set_type::difference_type>(set_idx * NUM_WAY));
-  auto end = std::next(begin, available_ways); // restrict to the available ways
-  return {begin, end};
-}
-
-bool CACHE::set_available_ways(uint32_t new_available_ways)
-{
-  new_available_ways = std::clamp<uint32_t>(new_available_ways, 1, NUM_WAY);
-
-  if (new_available_ways == available_ways) {
-    return true;
-  }
-
-  // Increasing associativity does not require moving or clearing lines.
-  if (new_available_ways > available_ways) {
-    available_ways = new_available_ways;
-    return true;
-  }
-
-  // Shrinking associativity: invalidate all lines in the disabled ways. ChampSim is trace-driven and
-  // does not model data values for correctness, so dropping dirty lines without writeback has no
-  // functional impact and lets the repartition always apply immediately.
-  for (uint32_t set = 0; set < NUM_SET; ++set) {
-    auto set_begin = std::next(std::begin(block), static_cast<set_type::difference_type>(set * NUM_WAY));
-
-    for (uint32_t way = new_available_ways; way < available_ways; ++way) {
-      auto& blk = *std::next(set_begin, static_cast<set_type::difference_type>(way));
-
-      blk.valid = false;
-      blk.dirty = false;
-      blk.prefetch = false;
-    }
-  }
-
-  available_ways = new_available_ways;
-  return true;
-}
-
 // LCOV_EXCL_START exclude deprecated function
 uint64_t CACHE::get_way(uint64_t address, uint64_t /*unused set index*/) const
 {
@@ -649,10 +594,16 @@ uint64_t CACHE::get_way(uint64_t address, uint64_t /*unused set index*/) const
 
 bool CACHE::contains_nonprefetched_line(champsim::address addr) const
 {
-  auto [set_begin, set_end] = get_set_span(addr);
+  auto [set_begin, set_end] = get_available_set_span(addr);
   auto matcher = matches_address(addr);
 
-  auto found = std::find_if(set_begin, set_end, [&](const auto& blk) { return blk.valid && matcher(blk); });
+  auto found = std::find_if(
+    set_begin,
+    set_end,
+    [&](const auto& blk) {
+        return blk.valid && matcher(blk);
+    }
+);
 
   return found != set_end && !found->prefetch;
 }
@@ -1056,4 +1007,62 @@ void CACHE::print_deadlock()
     champsim::range_print_deadlock(ul->PQ, NAME + "_PQ", q_writer, q_entry_pack);
   }
 }
+ 
+
+auto CACHE::get_available_set_span(champsim::address address) -> std::pair<set_type::iterator, set_type::iterator>
+{
+  const auto set_idx = get_set_index(address);
+  assert(set_idx < NUM_SET);
+
+  auto begin = std::next(std::begin(block), static_cast<set_type::difference_type>(set_idx * NUM_WAY));
+  auto end = std::next(begin, available_ways);
+  return {begin, end};
+}
+
+auto CACHE::get_available_set_span(champsim::address address) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
+{
+  const auto set_idx = get_set_index(address);
+  assert(set_idx < NUM_SET);
+
+  auto begin = std::next(std::cbegin(block), static_cast<set_type::difference_type>(set_idx * NUM_WAY));
+  auto end = std::next(begin, available_ways);
+  return {begin, end};
+}
+
+bool CACHE::set_available_ways(uint32_t new_available_ways)
+{
+  new_available_ways =
+      std::clamp<uint32_t>(new_available_ways, 1, NUM_WAY);
+
+  if (new_available_ways == available_ways) {
+    return true;
+  }
+
+  // Increasing associativity does not require moving or clearing lines.
+  if (new_available_ways > available_ways) {
+    available_ways = new_available_ways;
+    return true;
+  }
+
+  // Shrinking associativity: invalidate all lines in the disabled ways.
+  for (uint32_t set = 0; set < NUM_SET; ++set) {
+    auto set_begin = std::next(
+        std::begin(block),
+        static_cast<set_type::difference_type>(set * NUM_WAY));
+
+    for (uint32_t way = new_available_ways; way < available_ways; ++way) {
+      auto& blk = *std::next(
+          set_begin,
+          static_cast<set_type::difference_type>(way));
+
+      blk.valid = false;
+      blk.dirty = false;
+      blk.prefetch = false;
+    }
+  }
+
+  available_ways = new_available_ways;
+  return true;
+}
+
 // LCOV_EXCL_STOP
