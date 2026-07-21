@@ -21,10 +21,14 @@ inline constexpr std::size_t MARGINAL_UTILITY_BITS = 6;
 inline constexpr std::size_t ABSOLUTE_ACCURACY_BITS = 6;
 inline constexpr std::size_t CRITICALITY_BITS = 6;
 
-// Prefetch decision thresholds
-inline constexpr uint64_t MARGINAL_UTILITY_THRESHOLD = 30;
+// Controller thresholds
+inline constexpr uint64_t MARGINAL_UTILITY_THRESHOLD = 32;
 inline constexpr uint64_t CRITICALITY_HI_THRESHOLD = 30;
 inline constexpr uint64_t CRITICALITY_LO_THRESHOLD = 15;
+inline constexpr uint64_t LLC_PENALTY = 1;
+inline constexpr uint64_t DRAM_PENALTY = 5;
+inline constexpr uint64_t LLC_REWARD = 1;
+inline constexpr uint64_t DRAM_REWARD = 2;
 
 // Coverage Filter Parameters
 inline constexpr std::size_t COVERAGE_FILTER_SIZE = 256;

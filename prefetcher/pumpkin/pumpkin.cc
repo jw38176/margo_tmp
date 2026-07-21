@@ -51,47 +51,59 @@ void pumpkin::set_llc_reference(CACHE* llc)
 void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, uint64_t current_cycle, std::size_t prefetcher_id)
 {
   for (auto& candidate : candidates) {
+
+    // PUMPKIN: Filter prefetch request candidates by sub-prefetchers through the controller
     const bool should_pf = controller->should_prefetch(candidate.trigger_ip, prefetcher_id);
+
+    // PUMPKIN: Leak filtered prefetches
     bool will_pf = should_pf;
     if (!should_pf && (rand_u64() % pumpkin_params::NEGATIVE_LEAK_INV_PROB) == 0) {
       will_pf = true;
     }
 
+    // PUMPKIN: Get prefetch address
     const auto pf_line_addr = line_of(candidate.address);
 
     // PUMPKIN: Skip Redundant Prefetches
-    const bool redundant_pf = intern_->in_cache(pf_line_addr) || intern_->in_mshr(pf_line_addr);
+    const bool in_cache = intern_->in_cache(pf_line_addr);
+
+    // PUMPKIN: Check if prefetch is in MSHR
+    const bool in_mshr = intern_->in_mshr(pf_line_addr);
 
     // PUMPKIN: Record prefetch in pf_sampler
-    if (!redundant_pf && pf_sampler.should_sample(pf_line_addr))
+    if (!in_cache && pf_sampler.should_sample(pf_line_addr))
     {
       if (auto cap_evt = pf_sampler.record_prefetch(pf_line_addr, current_cycle, candidate.trigger_ip, prefetcher_id, will_pf);
           cap_evt.has_value()) {
-        controller->process_eviction_event(*cap_evt, current_cycle, intern_->get_l3_latency(), intern_->get_dram_latency());
+        controller->process_eviction_event(*cap_evt, current_cycle);
       }
     }
 
     // PUMPKIN: Record prefetch in crit_sampler
-    if (crit_sampler.should_sample(pf_line_addr) && will_pf)
+    if (crit_sampler.should_sample(pf_line_addr) && will_pf && !in_cache && !in_mshr)
     {
       crit_sampler.record_prefetch(pf_line_addr, current_cycle);
     }
 
     // ISSUE PREFETCH
+    const bool redundant = in_cache || in_mshr;
     bool issued = false;
-    if (will_pf) {
+    if (will_pf && !redundant)
+    {
       issued = prefetch_line(candidate.address, candidate.fill_this_level, candidate.metadata);
     }
 
     // SUB-PREFETCHER HANDOFF: report whether Pumpkin actually issued it.
     if (candidate.notify_result) {
-      candidate.notify_result(issued, !will_pf);
+      candidate.notify_result(issued, !will_pf); // TODO: Check MLOP's behaviour with this flag (whether to mark redundant prefetches as prefetched)
     }
 
     auto& stats = _pf_stats.at(prefetcher_id);
     stats.candidates++;
     if (!will_pf) {
       stats.filtered++;
+    } else if (redundant) {
+      stats.redundant++;
     } else if (issued) {
       stats.issued++;
     } else {
@@ -176,7 +188,7 @@ uint32_t pumpkin::prefetcher_cache_operate(champsim::address addr, champsim::add
   if (auto access_evt = pf_sampler.notify_demand_access(current_line_addr, current_cycle, ip); access_evt.has_value())
   {
     assert(controller != nullptr);
-    controller->process_eviction_event(*access_evt, current_cycle, intern_->get_l3_latency(), intern_->get_dram_latency());
+    controller->process_eviction_event(*access_evt, current_cycle);
   }
 
   // PUMPKIN: Criticality tracking for demand loads. instr_id is supplied by the
@@ -218,10 +230,12 @@ uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long w
 
   if (prefetch)
   {
-    if (auto fill_evt = pf_sampler.notify_cache_fill(line_of(addr), cycle); fill_evt.has_value())
+    // last_fill_from_dram() reflects the line just filled by handle_fill (set
+    // immediately before this callback), i.e. the ground-truth origin of `addr`.
+    if (auto fill_evt = pf_sampler.notify_cache_fill(line_of(addr), cycle, intern_->last_fill_from_dram()); fill_evt.has_value())
     {
       assert(controller != nullptr);
-      controller->process_eviction_event(*fill_evt, fill_evt->entry.demand_timestamp, intern_->get_l3_latency(), intern_->get_dram_latency());
+      controller->process_eviction_event(*fill_evt, fill_evt->entry.demand_timestamp);
     }
   }
 
@@ -232,7 +246,7 @@ uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long w
   if (evicted_addr != champsim::address{}) {
     if (auto evict_evt = pf_sampler.notify_cache_evict(line_of(evicted_addr)); evict_evt.has_value()) {
       assert(controller != nullptr);
-      controller->process_eviction_event(*evict_evt, cycle, intern_->get_l3_latency(), intern_->get_dram_latency());
+      controller->process_eviction_event(*evict_evt, cycle);
     }
 
     // PUMPKIN: Tune criticality sampling rate
@@ -273,6 +287,9 @@ void pumpkin::prefetcher_final_stats()
   const uint64_t total_issued =
       std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0},
                       [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.issued; });
+  const uint64_t total_redundant =
+      std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0},
+                      [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.redundant; });
   const uint64_t total_not_issued =
       std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0},
                       [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.not_issued; });
@@ -283,7 +300,9 @@ void pumpkin::prefetcher_final_stats()
   std::cout << std::fixed << std::setprecision(2);
   std::cout << "  Issued:   " << total_issued << " (" << pct(total_issued, total_candidates) << "%)" << std::endl;
   std::cout << "  Filtered: " << total_filtered << " (" << pct(total_filtered, total_candidates) << "%)" << std::endl;
-  std::cout << "  Selected but not issued: " << total_not_issued << " (" << pct(total_not_issued, total_candidates) << "%)"
+  std::cout << "  Redundant (in cache/MSHR): " << total_redundant << " (" << pct(total_redundant, total_candidates) << "%)"
+            << std::endl;
+  std::cout << "  Selected but not issued (PQ full): " << total_not_issued << " (" << pct(total_not_issued, total_candidates) << "%)"
             << std::endl;
 
   std::cout << std::endl << "  Candidate source breakdown:" << std::endl;
@@ -359,6 +378,23 @@ void pumpkin::prefetcher_final_stats()
   else
     std::cout << "  LatePrefetch/CacheHit ratio: " << std::fixed << std::setprecision(4)
               << (static_cast<double>(late_prefetch_events) / static_cast<double>(cache_hit_events)) << std::endl;
+
+  const uint64_t inacc_dram_fill0 = controller->inaccurate_dram_fill_zero();
+  const uint64_t inacc_dram_filln = controller->inaccurate_dram_fill_nonzero();
+  const uint64_t inacc_llc_fill0 = controller->inaccurate_llc_fill_zero();
+  const uint64_t inacc_llc_filln = controller->inaccurate_llc_fill_nonzero();
+  const uint64_t inacc_dram = inacc_dram_fill0 + inacc_dram_filln;
+  const uint64_t inacc_llc = inacc_llc_fill0 + inacc_llc_filln;
+  const uint64_t inacc_total = inacc_dram + inacc_llc;
+
+  std::cout << std::endl << "PUMPKIN Inaccurate Prefetch Origin Stats (negative path)" << std::endl;
+  std::cout << "  Total inaccurate: " << inacc_total << std::endl;
+  std::cout << "  From DRAM: " << inacc_dram << " (" << pct(inacc_dram, inacc_total) << "%)" << std::endl;
+  std::cout << "    fill_latency == 0: " << inacc_dram_fill0 << " (" << pct(inacc_dram_fill0, inacc_dram) << "% of DRAM)" << std::endl;
+  std::cout << "    fill_latency != 0: " << inacc_dram_filln << " (" << pct(inacc_dram_filln, inacc_dram) << "% of DRAM)" << std::endl;
+  std::cout << "  From LLC:  " << inacc_llc << " (" << pct(inacc_llc, inacc_total) << "%)" << std::endl;
+  std::cout << "    fill_latency == 0: " << inacc_llc_fill0 << " (" << pct(inacc_llc_fill0, inacc_llc) << "% of LLC)" << std::endl;
+  std::cout << "    fill_latency != 0: " << inacc_llc_filln << " (" << pct(inacc_llc_filln, inacc_llc) << "% of LLC)" << std::endl;
 
   controller->print_filter_table_stats(std::cout, [](std::size_t prefetcher_id) { return sub_prefetcher_name(prefetcher_id); });
   controller->print_coverage_filter_stats(std::cout);

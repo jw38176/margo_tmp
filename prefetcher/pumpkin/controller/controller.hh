@@ -80,7 +80,7 @@ public:
              const std::function<const char*(std::size_t)>& prefetcher_name = {});
   ~Controller();
 
-  void process_eviction_event(const PfSampler::EvictionEvent& event, uint64_t current_cycle, float lat_l3, float lat_dram);
+  void process_eviction_event(const PfSampler::EvictionEvent& event, uint64_t current_cycle);
 
   // Provide the last-level cache reference so training can tell whether an
   // evicted line still resides deeper in the hierarchy. Set once at startup.
@@ -111,6 +111,16 @@ public:
   uint64_t critical_loads_recorded() const { return _critical_loads_recorded; }
   uint64_t non_critical_loads_recorded() const { return _non_critical_loads_recorded; }
 
+  // Negative-path (inaccurate prefetch) origin breakdown. Classified exactly as
+  // the marginal-utility penalty: for a filled line (fill_latency != 0) the
+  // origin is the ground-truth from_dram bit; for a non-filled line
+  // (fill_latency == 0) it is approximated by LLC residency (resident -> LLC,
+  // otherwise assumed DRAM).
+  uint64_t inaccurate_dram_fill_zero() const { return _inaccurate_dram_fill_zero; }
+  uint64_t inaccurate_dram_fill_nonzero() const { return _inaccurate_dram_fill_nonzero; }
+  uint64_t inaccurate_llc_fill_zero() const { return _inaccurate_llc_fill_zero; }
+  uint64_t inaccurate_llc_fill_nonzero() const { return _inaccurate_llc_fill_nonzero; }
+
   void print_filter_table_stats(std::ostream& os, const std::function<const char*(std::size_t)>& prefetcher_name) const;
   void print_coverage_filter_stats(std::ostream& os) const;
 
@@ -130,6 +140,12 @@ private:
   uint64_t _filter_stats_events{0};
   uint64_t _critical_loads_recorded{0};
   uint64_t _non_critical_loads_recorded{0};
+
+  // Negative-path inaccurate-prefetch origin counts (see accessors above).
+  uint64_t _inaccurate_dram_fill_zero{0};
+  uint64_t _inaccurate_dram_fill_nonzero{0};
+  uint64_t _inaccurate_llc_fill_zero{0};
+  uint64_t _inaccurate_llc_fill_nonzero{0};
 };
 
 #endif

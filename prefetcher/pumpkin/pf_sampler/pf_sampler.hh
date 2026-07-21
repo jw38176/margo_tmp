@@ -51,6 +51,11 @@ public:
     bool useful{false};     // Set after demand consumes this entry, prevents negative training on a subsequent eviction event.
     bool valid{true};       // Cleared after any terminal event so subsequent cache/pf_sampler evicts don't double-count
 
+    // Ground-truth fill origin, captured at cache-fill time. from_dram == true
+    // means the fill was served by DRAM; from_dram == false means it was served
+    // by a lower-level cache (the LLC). Only meaningful once fill_latency != 0.
+    bool from_dram{false};
+
     auto index() const
     {
       using namespace champsim::data::data_literals;
@@ -74,7 +79,9 @@ public:
                                                bool prefetched); // `prefetched` is false for a filtered prefetch request
 
   // Updates pf_sampler entry when its prefetched line is filled into cache.
-  std::optional<PfSampler::EvictionEvent> notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle);
+  // `from_dram` is the cache's ground-truth fill origin for this line (true if
+  // served by DRAM, false if served by the LLC).
+  std::optional<PfSampler::EvictionEvent> notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle, bool from_dram);
 
   // On demand cache access, returns CacheHit event and invalidates matching pf_sampler entry.
   std::optional<EvictionEvent> notify_demand_access(champsim::address line_addr, uint64_t cycle, champsim::address demand_pc);

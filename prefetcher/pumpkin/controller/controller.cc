@@ -122,7 +122,7 @@ Controller::~Controller() = default;
 
 bool Controller::in_llc(champsim::address addr) const { return _llc != nullptr && _llc->in_cache(addr); }
 
-void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, uint64_t current_cycle, float lat_l3, float lat_dram)
+void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, uint64_t current_cycle)
 {
   const PfSampler::pf_sampler_entry& entry = event.entry;
   const uint64_t& fill_latency = entry.fill_latency;
@@ -191,11 +191,31 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
     }
 
     {
-      uint64_t marginal_utility_decrements = (static_cast<float>(fill_latency) > lat_l3 * 1.5f) ? 5 : 1;
+      // Penalize a wasted fetch more when it came from DRAM than from the LLC.
+      // For a filled line the origin is the cache's ground-truth from_dram bit.
+      // Non-issued or still-in-flight prefetches never filled, so no fill-origin
+      // bit exists; approximate by whether the line is currently resident in the
+      // LLC (cheap to refetch) versus not (assume DRAM, expensive).
+      const bool from_dram = (fill_latency == 0) ? !in_llc(entry.pf_line_addr) : entry.from_dram;
 
-      // For non-issued prefetches or in-flight prefetches, see if the line is in the LLC to determine penalty
-      if (fill_latency == 0)
-        marginal_utility_decrements = (in_llc(entry.pf_line_addr)) ? 1 : 5;
+      // Instrument the negative path: count this inaccurate prefetch by fill
+      // origin (DRAM vs LLC) and whether it had a measured fill latency.
+      if (from_dram)
+      {
+        if (fill_latency == 0)
+          _inaccurate_dram_fill_zero++;
+        else
+          _inaccurate_dram_fill_nonzero++;
+      }
+      else
+      {
+        if (fill_latency == 0)
+          _inaccurate_llc_fill_zero++;
+        else
+          _inaccurate_llc_fill_nonzero++;
+      }
+
+      const uint64_t marginal_utility_decrements = from_dram ? pumpkin_params::DRAM_PENALTY : pumpkin_params::LLC_PENALTY;
 
       const contributor& most_accurate = contributors.front();
       utility_tracker_entry& most_accurate_entry = _filter_table.get(prefetch_src_pcs[most_accurate.prefetcher_id], most_accurate.prefetcher_id);
@@ -324,16 +344,23 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
 
       utility_tracker_entry& filter_table_entry = _filter_table.get(prefetch_src_pcs[c.prefetcher_id], c.prefetcher_id);
 
-      // Scale marginal utility by address origin (L3 or DRAM)
-      uint64_t marginal_utility_increments = (static_cast<float>(fill_latency) > lat_l3 * 1.5f) ? 2 : 1;
+      // Scale marginal utility by fill origin (LLC or DRAM). fill_latency != 0 is
+      // guaranteed here (the fill_latency == 0 early-return above), so the
+      // ground-truth from_dram bit is valid.
+      uint64_t marginal_utility_increments = entry.from_dram ? pumpkin_params::DRAM_REWARD : pumpkin_params::LLC_REWARD;
 
       // Define fractional marginal utility
       uint64_t numerator = latency_hidden;
       uint64_t denominator = fill_latency;
 
       // Scale marginal utility by criticality
-      numerator *= criticality;
-      denominator *= (1 << (pumpkin_params::CRITICALITY_BITS - 1)) / 2;
+      // numerator *= criticality;
+      // denominator *= (1 << (pumpkin_params::CRITICALITY_BITS - 1)); // Initialisation value
+
+      // Scale by (0.5 + criticality_norm * 3)
+      constexpr uint64_t CRITICALITY_SAT = (1 << pumpkin_params::CRITICALITY_BITS) - 1;
+      numerator *= (CRITICALITY_SAT + 6 * criticality);
+      denominator *= (3 * CRITICALITY_SAT);
 
       for (uint64_t inc = 0; inc < marginal_utility_increments; ++inc)
         filter_table_entry.marginal_utility.increment(numerator, denominator);

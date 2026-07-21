@@ -10,7 +10,7 @@
 #include "../../pythia/pumpkin_wrapper.h"
 #include "../../mlop/pumpkin_wrapper.h"
 #include "../../bingo/pumpkin_wrapper.h"
-#include "../../triangel/pumpkin_wrapper.h"
+// #include "../../triangel/pumpkin_wrapper.h"
 #include "../sub_prefetcher_common.hh"
 
 namespace pumpkin_wrappers
@@ -24,7 +24,7 @@ inline constexpr auto SUB_PREFETCHERS = std::array{
     SubPrefetcherConfig{"pythia", make_pythia_pumpkin_wrapper},
     SubPrefetcherConfig{"bingo", make_bingo_pumpkin_wrapper},
     SubPrefetcherConfig{"pmp", make_pmp_pumpkin_wrapper},
-    SubPrefetcherConfig{"triangel", make_triangel_pumpkin_wrapper},
+    // SubPrefetcherConfig{"triangel", make_triangel_pumpkin_wrapper},
 };
 } // namespace pumpkin_wrappers
 #endif

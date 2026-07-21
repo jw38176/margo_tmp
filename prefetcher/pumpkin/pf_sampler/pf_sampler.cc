@@ -119,7 +119,7 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
   return EvictionEvent{victim, EvictionCause::PfSamplerCapacity};
 }
 
-std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle)
+std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle, bool from_dram)
 {
   pf_sampler_entry probe{};
   probe.pf_line_addr = pf_line_addr;
@@ -137,6 +137,8 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_fill(champsim::a
   }
 
   updated.in_cache = true;
+  // Record the ground-truth fill origin before any terminal-event snapshot.
+  updated.from_dram = from_dram;
 
   if (delay_subtimely_training)
   {

@@ -37,7 +37,8 @@ private:
     uint64_t candidates{0};
     uint64_t filtered{0};
     uint64_t issued{0};
-    uint64_t not_issued{0}; // selected (will_pf) but prefetch_line declined
+    uint64_t redundant{0};  // selected (will_pf) but line already in cache or MSHR
+    uint64_t not_issued{0}; // selected (will_pf), not redundant, but prefetch_line declined (PQ full)
   };
 
   std::vector<prefetch_candidate_stats> _pf_stats;

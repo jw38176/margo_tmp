@@ -16,8 +16,8 @@ inline constexpr int PERC_COUNTER_MAX = 15; // -16 to +15: 5-bit counter
 //   >= PERC_THRESHOLD_HI  → fill this cache level
 //   >= PERC_THRESHOLD_LO  → fill lower level only
 //   <  PERC_THRESHOLD_LO  → reject
-inline constexpr int PERC_THRESHOLD_HI = +10;
-inline constexpr int PERC_THRESHOLD_LO = 2;
+inline constexpr int PERC_THRESHOLD_HI = 10;
+inline constexpr int PERC_THRESHOLD_LO = 6;
 
 // Training hysteresis: only reinforce a correct prediction whose sum lies in
 // (NEG_UPDT_THRESHOLD, POS_UPDT_THRESHOLD). Saturated sums are left alone.
