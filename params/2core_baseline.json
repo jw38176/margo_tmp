@@ -146,7 +146,7 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": "no",
-    "replacement": "drrip"
+    "replacement": "lru"
   },
   "physical_memory": {
     "data_rate": 3200,

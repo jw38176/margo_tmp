@@ -43,6 +43,8 @@ public:
 
   virtual std::vector<WrappedPrefetch> cycle_operate() { return {}; }
 
+  virtual void final_stats() {}
+
   // Optional hook: the meta-prefetcher forwards the LLC reference (discovered by the simulator) so a
   // wrapped sub-prefetcher can drive LLC way partitioning. Default is a no-op.
   virtual void set_llc_reference(CACHE* llc) { (void)llc; }

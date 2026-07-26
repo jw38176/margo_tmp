@@ -23,8 +23,6 @@ inline constexpr std::size_t CRITICALITY_BITS = 6;
 
 // Controller thresholds
 inline constexpr uint64_t MARGINAL_UTILITY_THRESHOLD = 32;
-inline constexpr uint64_t CRITICALITY_HI_THRESHOLD = 30;
-inline constexpr uint64_t CRITICALITY_LO_THRESHOLD = 15;
 inline constexpr uint64_t LLC_PENALTY = 1;
 inline constexpr uint64_t DRAM_PENALTY = 5;
 inline constexpr uint64_t LLC_REWARD = 1;
@@ -34,15 +32,30 @@ inline constexpr uint64_t DRAM_REWARD = 2;
 inline constexpr std::size_t COVERAGE_FILTER_SIZE = 256;
 inline constexpr std::size_t COVERAGE_UTILITY_BITS = 6;
 
+// Temporary criticality tunning knobs
+inline constexpr bool CU_CRIT_ON = false;
+inline constexpr bool CU_ON = false;
+inline constexpr float CU_CRIT_SCALE = 0.5; // from 0 to 1
+inline constexpr float MU_CRIT_CONSTANT = 2; // C
+
 // Triangel tracking gate thresholds.
 // On a covered access, Triangel is trained when Crit(Y) * (CU_SAT - CU(Y))
 // exceeds TRIANGEL_TRACK_THRESHOLD, where both factors range over
-// [0, (1 << *_BITS) - 1]. On a miss, only Crit(Y) is used.
-inline constexpr uint64_t TRIANGEL_TRACK_THRESHOLD = 400;
-inline constexpr uint64_t TRIANGEL_MISS_CRIT_THRESHOLD = CRITICALITY_LO_THRESHOLD;
+// [0, (1 << *_BITS) - 1].
+inline constexpr uint64_t TRIANGEL_TRACK_THRESHOLD = 800;
+inline constexpr uint64_t TEST_THRESHOLD = 20;
 
-// Probability (1-in-N) that a filtered-out prefetch is still issued, to maintain sampler-cache calibration.
+// When true, filtered-out prefetches may still be issued at a 1-in-N rate so the
+// sampler cache stays calibrated. Set to false to disable negative leakage entirely.
+inline constexpr bool ENABLE_NEGATIVE_LEAK = true;
 inline constexpr uint64_t NEGATIVE_LEAK_INV_PROB = 100;
+
+// Masks
+inline constexpr uint64_t TIMESTAMP_BITS = 14;
+inline constexpr uint64_t TIMESTAMP_MASK = (1ULL << TIMESTAMP_BITS) - 1;
+inline constexpr uint64_t TIMESTAMP_HALF = 1ULL << (TIMESTAMP_BITS - 1);
+inline constexpr uint64_t LINE_TAG_BITS = 14;
+inline constexpr uint64_t LINE_TAG_MASK = (1ULL << LINE_TAG_BITS) - 1;
 
 } // namespace pumpkin_params
 

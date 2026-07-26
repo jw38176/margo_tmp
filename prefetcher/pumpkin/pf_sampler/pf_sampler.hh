@@ -37,17 +37,17 @@ public:
   struct pf_sampler_entry
   {
     // Prefetch Metadata
-    champsim::address pf_line_addr;
+    uint64_t line_tag{0};                             // Hashed, truncated tag of the prefetched line (storage-efficient)
     uint64_t fill_latency{0};                         // Time taken from prefetch request to cache fill 
-    uint64_t first_request_timestamp{0};              // Timestamp of the first prefetch request for the pf_line_addr
-    uint64_t demand_timestamp{0};                     // Timestamp of the demand access that consumed the prefetched line
+    uint64_t first_request_timestamp{0};              // Masked timestamp of the first prefetch request for the line
+    uint64_t demand_timestamp{0};                     // Masked timestamp of the demand access that consumed the prefetched line
     champsim::address demand_pc{};                    // PC of the demand access that consumed the prefetched line
-    std::vector<uint64_t> prefetch_timestamps;        // Length == _num_prefetchers
+    std::vector<uint64_t> prefetch_timestamps;        // Length == _num_prefetchers (masked timestamps)
     std::vector<champsim::address> prefetch_src_pcs;  // Length == _num_prefetchers
 
     // Prefetch Life Cycle Flags
     bool prefetched{false}; // Whether the prefetch was issued or filtered (currently only for tracking)
-    bool in_cache{false};   // Mirrors the cache state of pf_line_addr. Always false for a filtered entry.
+    bool in_cache{false};   // Mirrors the cache state of the line. Always false for a filtered entry.
     bool useful{false};     // Set after demand consumes this entry, prevents negative training on a subsequent eviction event.
     bool valid{true};       // Cleared after any terminal event so subsequent cache/pf_sampler evicts don't double-count
 
@@ -56,16 +56,14 @@ public:
     // by a lower-level cache (the LLC). Only meaningful once fill_latency != 0.
     bool from_dram{false};
 
-    auto index() const
-    {
-      using namespace champsim::data::data_literals;
-      return pf_line_addr.slice_upper<6_b>();
-    }
-    auto tag() const
-    {
-      using namespace champsim::data::data_literals;
-      return pf_line_addr.slice_upper<6_b>();
-    }
+    // LLC residency probed eagerly at record time (when the full address is still
+    // available). Used by the controller to approximate the fill origin for lines
+    // that never actually filled (fill_latency == 0), since the truncated tag can
+    // no longer probe the LLC.
+    bool llc_resident_at_record{false};
+
+    auto index() const { return line_tag; }
+    auto tag() const { return line_tag; }
   };
 
   struct EvictionEvent
@@ -75,8 +73,9 @@ public:
   };
 
   // Records a prefetch candidate. If inserting evicts an entry, returns a PfSamplerCapacity event; otherwise returns std::nullopt.
+  // `llc_resident` is the LLC residency of the line probed eagerly at record time.
   std::optional<EvictionEvent> record_prefetch(champsim::address pf_line_addr, uint64_t cycle, champsim::address src_pc, std::size_t prefetcher_id,
-                                               bool prefetched); // `prefetched` is false for a filtered prefetch request
+                                               bool prefetched, bool llc_resident); // `prefetched` is false for a filtered prefetch request
 
   // Updates pf_sampler entry when its prefetched line is filled into cache.
   // `from_dram` is the cache's ground-truth fill origin for this line (true if

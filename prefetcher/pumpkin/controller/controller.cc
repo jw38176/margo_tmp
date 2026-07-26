@@ -6,6 +6,7 @@
 #include <numeric>
 #include <vector>
 
+#include "../pumpkin_masking.hh"
 #include "cache.h"
 
 /////////////////////////////////////////////////////////////
@@ -179,7 +180,8 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
               {
                 if (a.absolute_accuracy != b.absolute_accuracy)
                   return a.absolute_accuracy > b.absolute_accuracy;
-                return prefetch_timestamps[a.prefetcher_id] < prefetch_timestamps[b.prefetcher_id];
+                return pumpkin_masking::timestamp_delta(prefetch_timestamps[a.prefetcher_id], first_request_timestamp)
+                       < pumpkin_masking::timestamp_delta(prefetch_timestamps[b.prefetcher_id], first_request_timestamp);
               });
 
     for (const contributor& c : contributors)
@@ -194,9 +196,10 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
       // Penalize a wasted fetch more when it came from DRAM than from the LLC.
       // For a filled line the origin is the cache's ground-truth from_dram bit.
       // Non-issued or still-in-flight prefetches never filled, so no fill-origin
-      // bit exists; approximate by whether the line is currently resident in the
-      // LLC (cheap to refetch) versus not (assume DRAM, expensive).
-      const bool from_dram = (fill_latency == 0) ? !in_llc(entry.pf_line_addr) : entry.from_dram;
+      // bit exists; approximate by the LLC residency probed eagerly at record
+      // time (resident -> LLC, cheap to refetch; otherwise assume DRAM). The
+      // truncated line tag can no longer probe the LLC directly.
+      const bool from_dram = (fill_latency == 0) ? !entry.llc_resident_at_record : entry.from_dram;
 
       // Instrument the negative path: count this inaccurate prefetch by fill
       // origin (DRAM vs LLC) and whether it had a measured fill latency.
@@ -292,13 +295,13 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
               {
                 if (a.absolute_accuracy != b.absolute_accuracy)
                   return a.absolute_accuracy > b.absolute_accuracy;
-                return prefetch_timestamps[a.prefetcher_id] < prefetch_timestamps[b.prefetcher_id];
+                return pumpkin_masking::timestamp_delta(prefetch_timestamps[a.prefetcher_id], first_request_timestamp)
+                       < pumpkin_masking::timestamp_delta(prefetch_timestamps[b.prefetcher_id], first_request_timestamp);
               });
 
     // Marginal Utility Calculation
     uint64_t reference_time;
     uint64_t latency_credit;
-    const char* assert_path;
 
     // Determine reference time and available latency credit
     if (event.cause == PfSampler::EvictionCause::CacheHit)
@@ -308,7 +311,6 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
       reference_time = demand_timestamp;
       // Full latency credit is available
       latency_credit = fill_latency;
-      assert_path = "CacheHit";
     }
     else
     {
@@ -316,31 +318,25 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
       // Reference time is the demand timestamp (fill happens later)
       reference_time = demand_timestamp;
       // Only the latency porentially hidden by the prefetch is available to credit
-      latency_credit = demand_timestamp - first_request_timestamp;
-      assert_path = "LatePrefetch";
+      latency_credit = pumpkin_masking::timestamp_delta(demand_timestamp, first_request_timestamp);
     }
 
     // Get criticality of the demand
     uint64_t criticality = _filter_table.get(demand_pc, 0).criticality.get_value();
 
-    bool is_first_contributor = true;
     for (const contributor& c : contributors)
     {
       const uint64_t prefetch_time = prefetch_timestamps[c.prefetcher_id];
 
-      if (is_first_contributor && prefetch_time >= reference_time)
-      {
-        assert(false && "prefetch_time must be before reference_time");
-      }
-
-      // Skip dominated prefetches
-      if (!is_first_contributor && prefetch_time >= reference_time)
-      {
+      // A prefetch earns credit only if it plausibly preceded the reference time
+      // (wrap-safe comparison of the masked timestamps). Late or dominated
+      // prefetches (not before the reference) are skipped rather than asserted on,
+      // since a masked timestamp can no longer be ordered by raw magnitude.
+      if (!pumpkin_masking::timestamp_before(prefetch_time, reference_time))
         continue;
-      }
 
       // Compute latency hidden credit
-      uint64_t latency_hidden = std::min(reference_time - prefetch_time, latency_credit);
+      uint64_t latency_hidden = std::min(pumpkin_masking::timestamp_delta(reference_time, prefetch_time), latency_credit);
 
       utility_tracker_entry& filter_table_entry = _filter_table.get(prefetch_src_pcs[c.prefetcher_id], c.prefetcher_id);
 
@@ -357,23 +353,27 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
       // numerator *= criticality;
       // denominator *= (1 << (pumpkin_params::CRITICALITY_BITS - 1)); // Initialisation value
 
-      // Scale by (0.5 + criticality_norm * 3)
-      constexpr uint64_t CRITICALITY_SAT = (1 << pumpkin_params::CRITICALITY_BITS) - 1;
-      numerator *= (CRITICALITY_SAT + 6 * criticality);
-      denominator *= (3 * CRITICALITY_SAT);
+      // CRIT DISABLE
+      if (pumpkin_params::CU_CRIT_ON)
+      {
+        // Scale by (scale * criticality + (1 - scale))
+        constexpr uint64_t CRITICALITY_SAT = (1 << pumpkin_params::CRITICALITY_BITS) - 1;
+        numerator *= (CRITICALITY_SAT * pumpkin_params::CU_CRIT_SCALE + criticality * (1 - pumpkin_params::CU_CRIT_SCALE));
+        // Scale by constatnt factor
+        numerator *= pumpkin_params::MU_CRIT_CONSTANT;
+        denominator *= CRITICALITY_SAT;
+      }
 
       for (uint64_t inc = 0; inc < marginal_utility_increments; ++inc)
         filter_table_entry.marginal_utility.increment(numerator, denominator);
 
       latency_credit -= latency_hidden;
-      reference_time -= latency_hidden;
+      reference_time = (reference_time - latency_hidden) & pumpkin_params::TIMESTAMP_MASK;
 
-      const bool loop_break = latency_credit <= 0;
+      const bool loop_break = latency_credit == 0;
 
       if (loop_break)
         break;
-
-      is_first_contributor = false;
     }
 
     // Coverage Utility update. Measure the fraction of this covered load's
@@ -383,6 +383,7 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
     // the counter is decremented (negative coverage).
     {
       uint64_t earliest_nontriangel_ts = 0;
+      uint64_t earliest_nontriangel_delta = 0; // gap from first_request_timestamp; smallest == earliest
       bool covered_by_nontriangel = false;
 
       for (std::size_t i = 0; i < _num_prefetchers; ++i)
@@ -395,16 +396,20 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
         if (!should_prefetch(prefetch_src_pcs[i], i))
           continue;
 
-        if (!covered_by_nontriangel || prefetch_timestamps[i] < earliest_nontriangel_ts)
+        // Anchor ordering on first_request_timestamp so the earliest prefetch is
+        // recovered even though the raw timestamps are masked (wrap-safe).
+        const uint64_t delta = pumpkin_masking::timestamp_delta(prefetch_timestamps[i], first_request_timestamp);
+        if (!covered_by_nontriangel || delta < earliest_nontriangel_delta)
         {
           earliest_nontriangel_ts = prefetch_timestamps[i];
+          earliest_nontriangel_delta = delta;
           covered_by_nontriangel = true;
         }
       }
 
       uint64_t covered_latency = 0;
-      if (covered_by_nontriangel && demand_timestamp > earliest_nontriangel_ts)
-        covered_latency = std::min(demand_timestamp - earliest_nontriangel_ts, fill_latency);
+      if (covered_by_nontriangel && pumpkin_masking::timestamp_before(earliest_nontriangel_ts, demand_timestamp))
+        covered_latency = std::min(pumpkin_masking::timestamp_delta(demand_timestamp, earliest_nontriangel_ts), fill_latency);
 
       _coverage_filter.get(demand_pc).coverage_utility.update_toward(covered_latency, fill_latency);
     }
@@ -432,10 +437,12 @@ void Controller::process_criticality_entry(const CritSampler::crit_sampler_entry
   // critical. This is invariant to whether the line was actually prefetched, which
   // is what breaks the hysteresis: a successful prefetch that turns the demand into
   // an L1 hit no longer hides the load's criticality.
-  assert(entry.rob_head_time >= entry.demand_issue_time); // This should never happen
-  const uint64_t rob_head_since_issue = entry.rob_head_time - entry.demand_issue_time;
+  // Wrap-safe elapsed time from demand issue to ROB head. The masked timestamps
+  // can no longer be ordered by raw magnitude, so a modular delta is used; an
+  // implausibly large value (a wrap artifact) is treated as non-critical.
+  const uint64_t rob_head_since_issue = pumpkin_masking::timestamp_delta(entry.rob_head_time, entry.demand_issue_time);
 
-  const bool critical = rob_head_since_issue < entry.natural_latency;
+  const bool critical = rob_head_since_issue <= pumpkin_params::TIMESTAMP_HALF && rob_head_since_issue < entry.natural_latency;
 
   utility_tracker_entry& filter_table_entry = _filter_table.get(entry.trigger_pc, 0);
 
@@ -462,18 +469,39 @@ void Controller::print_coverage_filter_stats(std::ostream& os) const { _coverage
 
 bool Controller::should_track_with_triangel(champsim::address pc, bool is_miss) const
 {
-  const uint64_t criticality = _filter_table.get(pc, 0).criticality.get_value();
+  const ssc& crit_counter = _filter_table.get(pc, 0).criticality;
+  const uint64_t criticality = crit_counter.get_value();
 
-  // On a miss the coverage signal is absent; use criticality alone.
-  if (is_miss)
-    return criticality > pumpkin_params::TRIANGEL_MISS_CRIT_THRESHOLD;
-
-  // Otherwise weight criticality by the uncovered fraction (1 - CU), both kept
-  // in fixed point over the counters' saturation range.
   const ssc& coverage_utility = _coverage_filter.get(pc).coverage_utility;
   const uint64_t inverse_coverage = coverage_utility.saturation_value - coverage_utility.get_value();
 
-  return criticality * inverse_coverage > pumpkin_params::TRIANGEL_TRACK_THRESHOLD;
+  constexpr uint64_t CRITICALITY_SAT = (1 << pumpkin_params::CRITICALITY_BITS) - 1;
+
+  // On a miss, gate on (0.25 + 1.5*crit) * (1 - CU)
+  // if (is_miss)
+  // {
+  if (!pumpkin_params::CU_ON)
+  {
+    return true;
+  }
+
+  if (pumpkin_params::CU_CRIT_ON)
+  {
+    float scaled_crit = (CRITICALITY_SAT * pumpkin_params::CU_CRIT_SCALE) + criticality * (1 - pumpkin_params::CU_CRIT_SCALE);
+    return (uint64_t)(scaled_crit * inverse_coverage) > pumpkin_params::TRIANGEL_TRACK_THRESHOLD;
+  }
+  else
+  {
+    return inverse_coverage > pumpkin_params::TEST_THRESHOLD;
+  }
+  // }
+
+  // Otherwise weight criticality by the uncovered fraction (1 - CU), both kept
+  // in fixed point over the counters' saturation range.
+
+  // return true; // Disable filtering for triangel on tag hits
+  // return (CRITICALITY_SAT + 6 * criticality) * inverse_coverage > pumpkin_params::TRIANGEL_TRACK_THRESHOLD * 4 * CRITICALITY_SAT;
+  // return inverse_coverage > pumpkin_params::TEST_THRESHOLD; // CRIT DISABLE
 }
 
 bool Controller::should_prefetch(champsim::address access_pc, std::size_t prefetcher_id)

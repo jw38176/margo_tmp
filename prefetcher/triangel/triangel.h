@@ -9,7 +9,6 @@
 #include <limits>
 #include <cassert>
 #include <utility>
-#include <map>
 #include <functional>
 
 #include "address.h"
@@ -70,7 +69,7 @@ struct metadata
         conf = 0;
     }
 
-    metadata(uint64_t tag_, uint64_t target_addr_):tag(tag_), target_addr(target_addr_), conf(0){}
+    metadata(uint64_t tag, uint64_t target_addr):tag(tag), target_addr(target_addr), conf(0){}
 };
 
 struct sampler_entry
@@ -89,12 +88,9 @@ struct sampler_entry
         hit = 0;
     }
 
-    sampler_entry(uint32_t addr_tag_, uint64_t train_pc_, uint64_t target_addr_, uint64_t timestamp_)
-        :addr_tag(addr_tag_), train_pc(train_pc_), target_addr(target_addr_), timestamp(timestamp_), hit(0) {
+    sampler_entry(uint32_t addr_tag, uint64_t train_pc, uint64_t target_addr, uint64_t timestamp)
+        :addr_tag(addr_tag), train_pc(train_pc), target_addr(target_addr), timestamp(timestamp), hit(0) {
     }
-
-    sampler_entry(const sampler_entry& other) = default;
-
     bool operator==(const sampler_entry& other) const {
         return addr_tag == other.addr_tag
             && train_pc == other.train_pc
@@ -132,9 +128,7 @@ struct ssampler_entry{
         hit = 0;
     }
 
-    ssampler_entry(uint64_t target_addr_, uint64_t ip, uint64_t timestamp_):target_addr(target_addr_), train_pc(ip), timestamp(timestamp_), hit(0){}
-
-    ssampler_entry(const ssampler_entry& other) = default;
+    ssampler_entry(uint64_t target_addr, uint64_t ip, uint64_t timestamp):target_addr(target_addr), train_pc(ip), timestamp(timestamp), hit(0){}
 
     ssampler_entry& operator=(const ssampler_entry& other) {
         if (this != &other) {  // Check for self-assignment
@@ -178,10 +172,10 @@ private:
 public:
   uint64_t count;
 
-  FIFOCache(uint64_t capacity_)
+  FIFOCache(uint64_t capacity)
   {
     this->count = 0;
-    this->capacity = capacity_;
+    this->capacity = capacity;
 
     head = new DLinkedNode();
     head->pre = nullptr;
@@ -194,7 +188,7 @@ public:
   }
 
 
-  FIFOCache(const FIFOCache& other) : capacity(other.capacity), count(other.count) {
+  FIFOCache(const FIFOCache& other) : count(other.count), capacity(other.capacity) {
 
     head = new DLinkedNode();
     head->pre = nullptr;
@@ -217,11 +211,11 @@ public:
 
 
 FIFOCache(FIFOCache&& other) noexcept
-    : cache(std::move(other.cache))
+    : count(other.count)
     , capacity(other.capacity)
     , head(other.head)
     , tail(other.tail)
-    , count(other.count)
+    , cache(std::move(other.cache))
 {
 
     other.head = nullptr;
@@ -405,10 +399,10 @@ private:
   DLinkedNode* tail;
 
 public:
-  LRUCache(int capacity_)
+  LRUCache(int capacity)
   {
     this->count = 0;
-    this->capacity = capacity_;
+    this->capacity = capacity;
 
     head = new DLinkedNode();
     head->pre = nullptr;
@@ -444,11 +438,11 @@ public:
 
 
   LRUCache(LRUCache&& other) noexcept
-  : cache(std::move(other.cache))
-  , count(other.count)
+  : count(other.count)
   , capacity(other.capacity)
   , head(other.head)
   , tail(other.tail)
+  , cache(std::move(other.cache))
   {
 
   other.head = nullptr;
@@ -545,7 +539,7 @@ public:
         delete tailNode;
         return record;
       }
-    } 
+    }
     else {
       DLinkedNode* node = cache[key];
       node->value = value;
@@ -701,8 +695,8 @@ private:
 public:
     int count;
 
-    LRURPSetAssocCache(int capacity_, int assoc_)
-        : capacity(capacity_), assoc(assoc_), count(0)
+    LRURPSetAssocCache(int capacity, int assoc)
+        : capacity(capacity), assoc(assoc), count(0)
     {
         if (this->assoc <= 0)
             this->assoc = 1;
@@ -1004,18 +998,6 @@ void removeDuplicates(std::vector<T>& vec) {
 class triangel: public champsim::modules::prefetcher{
     constexpr static bool TRIANGEL_DEBUG_PRINT = true;
 
-    uint64_t current_cycle = 0;
-
-    // statistics the metadata useful entry rate
-    map<uint64_t, bool> in_metadata;
-    uint64_t useful_entry_number = 0;
-    uint64_t useless_entry_number = 0;
-    set<uint64_t> critic_IP{};
-    uint64_t total_metadata = 0;
-    uint64_t total_metadata1 = 0;
-    uint64_t time_pre_fail = 0;
-    uint64_t time_pre_success = 0;
-
     //set the parameters of table size
     static constexpr int16_t train_size = 512;
     static constexpr int16_t train_assoc = 16;
@@ -1026,70 +1008,48 @@ class triangel: public champsim::modules::prefetcher{
     static constexpr int16_t duller_size = 64;
     static constexpr uint64_t window_size = 500000;
 
-    static constexpr uint64_t address_map_actual_entries = 196608 * 3;
-    static constexpr uint8_t address_map_max_ways = 8;
     static constexpr uint8_t address_map_actual_cache_assoc = 12;
-    static constexpr uint64_t address_map_rounded_entries = 262144 * 3;
     static constexpr uint8_t address_map_rounded_cache_assoc = 16;
-    static constexpr uint64_t address_map_num_sets = address_map_rounded_entries / address_map_rounded_cache_assoc;
-    static constexpr uint64_t size_increment = address_map_actual_entries / address_map_max_ways;
-    static constexpr uint64_t max_size = address_map_actual_entries;
-    static_assert(address_map_rounded_entries / address_map_rounded_cache_assoc ==
-                  address_map_actual_entries / address_map_actual_cache_assoc,
-                  "Triangel rounded and actual metadata tables must have same set count");
+
+    // Initialized once from the shared LLC geometry in set_llc_reference().
+    static uint32_t max_metadata_ways;
+    static uint64_t address_map_actual_entries;
+    static uint64_t address_map_rounded_entries;
+    static uint64_t address_map_num_sets;
+    static uint64_t size_increment;
+    static uint64_t max_size;
     uint64_t timestamp = 0;
-    uint32_t repartition = 0;
 
     //set the structure of Triangle
     LRURPSetAssocCache<train_table_entry> train_table{train_size, train_assoc};
     LRURPSetAssocCache<sampler_entry> sampler{sampler_size, sampler_assoc};
     FIFOCache<ssampler_entry> ssampler{ssampler_size};
     FIFOCache<reuse_entry> reuse_buffer{reuse_size};
-    LRURPSetAssocCache<metadata> markov_table{address_map_rounded_entries, address_map_rounded_cache_assoc};
+    static LRURPSetAssocCache<metadata> markov_table;
+    uint64_t markov_table_accesses = 0;
 
     static constexpr uint8_t NUM_SIZE_DUELERS = 64;
-    static constexpr uint8_t LLC_WAYS = 16;
-    static constexpr uint8_t MAX_METADATA_WAYS = 8;
 
-    std::vector<duller_entry> size_duels{std::vector<duller_entry>(NUM_SIZE_DUELERS)};
-    bool size_duels_initialized = false;
-    std::mt19937_64 size_duel_rng{0xC0FFEEULL};
+    static std::vector<duller_entry> size_duels;
+    static bool size_duels_initialized;
+    static std::mt19937_64 size_duel_rng;
+    static std::mt19937_64 rng;
 
-    std::vector<uint64_t> set_prefetch_score{std::vector<uint64_t>(LLC_WAYS + 1, 0)};
-
-    uint64_t all = 0;
+    static std::vector<uint64_t> set_prefetch_score;
+    static uint64_t all;
+    static uint64_t repartition;
+    static uint64_t size_duel_tick;
 
     // Number of LLC ways currently reserved for metadata.
     // This corresponds to gem5 current_size / size_increment.
-    uint8_t current_metadata_ways = 0;
+    static uint8_t current_metadata_ways;
 
-    CACHE* llc_cache = nullptr;
+    static CACHE* llc_cache;
+
     CACHE* target_cache = nullptr;
 
     //calculata the infomation
     uint64_t sample_entry_number = 0;
-
-    uint32_t flexible_hash(uint64_t value, uint32_t result_bits) {
-        // return value;
-        // Input validation
-        if (result_bits > 32) {
-            result_bits = 32;  // Limit to 32 bits max since return type is uint32_t
-        }
-
-        // Break the 64-bit value into parts for mixing
-        uint32_t lower = value & 0xFFFFFFFF;
-        uint32_t upper = (value >> 32) & 0xFFFFFFFF;
-
-        // Initial mixing using XOR
-        uint32_t mixed = lower ^ upper;
-
-        // Create mask for desired number of bits
-        uint32_t mask = (1u << result_bits) - 1;
-        uint32_t folded = (mixed>>result_bits) ^ (mixed & mask);
-
-        // Return the final hash value with specified number of bits
-        return folded & mask;
-    }
 
     uint32_t metadata_hash(uint64_t value) const {
         uint32_t lower = value & 0xFFFFFFFF;
@@ -1100,23 +1060,23 @@ class triangel: public champsim::modules::prefetcher{
         return mixed;
     }
 
-    uint64_t metadata_set_index(uint64_t addr, uint8_t active_metadata_ways) const {
-        if (active_metadata_ways == 0)
+    uint64_t metadata_set_index(uint64_t addr, uint32_t active_metadata_ways) const {
+        if (active_metadata_ways == 0 || address_map_num_sets == 0)
             return 0;
 
-        const uint64_t active = std::min<uint8_t>(active_metadata_ways, address_map_max_ways);
-        const uint64_t offset = (addr * address_map_max_ways) + (metadata_hash(addr) % active);
-        return offset & (address_map_num_sets - 1);
+        const uint64_t active = std::min<uint32_t>(active_metadata_ways, max_metadata_ways);
+        const uint64_t offset = (addr * max_metadata_ways) + (metadata_hash(addr) % active);
+        return offset % address_map_num_sets;
     }
 
-    bool metadata_entry_active(uint64_t addr, uint8_t active_metadata_ways) const {
+    bool metadata_entry_active(uint64_t addr, uint32_t active_metadata_ways) const {
         if (active_metadata_ways == 0)
             return false;
 
-        return (metadata_set_index(addr, active_metadata_ways) % address_map_max_ways) < active_metadata_ways;
+        return (metadata_set_index(addr, active_metadata_ways) % max_metadata_ways) < active_metadata_ways;
     }
 
-    void apply_metadata_partition(uint8_t active_metadata_ways) {
+    void apply_metadata_partition(uint32_t active_metadata_ways) {
         auto entries = markov_table.snapshot_entries();
         markov_table.clear();
 
@@ -1159,6 +1119,7 @@ class triangel: public champsim::modules::prefetcher{
       return probability >= random;
     }
 
+
     uint64_t tem_pre(uint64_t last_addr)
     {
         if (current_metadata_ways == 0)
@@ -1167,15 +1128,12 @@ class triangel: public champsim::modules::prefetcher{
         const uint64_t metadata_key = last_addr;
         const uint64_t metadata_set = metadata_set_index(metadata_key, current_metadata_ways);
 
+        markov_table_accesses++;
         metadata* cur_addr = markov_table.get(metadata_key, metadata_set);
 
         if (!cur_addr) {
-            time_pre_fail++;
             return 0;
         }
-
-        time_pre_success++;
-        in_metadata[metadata_key] = true;
 
         return cur_addr->target_addr;
     }
@@ -1184,11 +1142,15 @@ class triangel: public champsim::modules::prefetcher{
     {
         if (size_duels_initialized)
             return;
+        assert(llc_cache != nullptr);
+        const uint64_t duel_sets = size_increment / address_map_actual_cache_assoc;
+        assert(duel_sets > 0);
+        assert((duel_sets & (duel_sets - 1)) == 0);
 
-        const uint64_t set_mask = (size_increment / address_map_actual_cache_assoc) - 1;
+        const uint64_t set_mask = duel_sets - 1;
 
         for (auto& duel : size_duels) {
-            duel.reset(set_mask, address_map_actual_cache_assoc, LLC_WAYS, size_duel_rng);
+            duel.reset(set_mask, address_map_actual_cache_assoc, llc_cache->NUM_WAY, size_duel_rng);
         }
 
         size_duels_initialized = true;
@@ -1197,11 +1159,12 @@ class triangel: public champsim::modules::prefetcher{
     void process_size_dueling_access(uint64_t addr, bool should_pf)
     {
         initialize_size_duels();
-
+        
+        const uint64_t tick = ++size_duel_tick;
         all++;
 
         for (auto& duel : size_duels) {
-            int res = duel.checkAndInsert(addr, should_pf, current_cycle);
+            int res = duel.checkAndInsert(addr, should_pf, tick);
             if (res == 0)
                 continue;
 
@@ -1211,19 +1174,20 @@ class triangel: public champsim::modules::prefetcher{
             const int pref_set = pref_hit - 1;
 
             if (cache_hit) {
-                for (int y = static_cast<int>(set_prefetch_score.size()) - 2 - cache_set; y >= 0; --y)
-                    set_prefetch_score[y]++;
+                const int score_count = static_cast<int>(set_prefetch_score.size());
+                for (int y = score_count - 2 - cache_set; y >= 0; --y)
+                    set_prefetch_score[static_cast<std::size_t>(y)]++;
             }
 
             if (pref_hit) {
                 const uint64_t pref_weight = (2 * duel.temporalModMax) / 4;
 
-                for (int y = pref_set + 1; y < static_cast<int>(set_prefetch_score.size()); ++y)
-                    set_prefetch_score[y] += pref_weight;
+                const int score_count = static_cast<int>(set_prefetch_score.size());
+                for (int y = pref_set + 1; y < score_count; ++y)
+                    set_prefetch_score[static_cast<std::size_t>(y)] += pref_weight;
             }
         }
 
-        // gem5 evaluates the epoch after scoring the current access.
         if (all > window_size) {
             update_partition();
         }
@@ -1233,10 +1197,11 @@ class triangel: public champsim::modules::prefetcher{
     {
         initialize_size_duels();
 
+        const uint64_t tick = ++size_duel_tick;
         all++;
 
         for (auto& duel : size_duels) {
-            int res = duel.checkAndInsert(addr, false, current_cycle);
+            int res = duel.checkAndInsert(addr, false, tick);
             if (res == 0)
                 continue;
 
@@ -1244,18 +1209,23 @@ class triangel: public champsim::modules::prefetcher{
             const int cache_set = cache_hit - 1;
 
             if (cache_hit) {
-                for (int y = static_cast<int>(set_prefetch_score.size()) - 2 - cache_set; y >= 0; --y)
-                    set_prefetch_score[y]++;
+                const int score_count = static_cast<int>(set_prefetch_score.size());
+                for (int y = score_count - 2 - cache_set; y >= 0; --y)
+                    set_prefetch_score[static_cast<std::size_t>(y)]++;
             }
+        }
+
+        if (all > window_size) {
+            update_partition();
         }
     }
 
     void update_partition()
     {
-        uint8_t target_metadata_ways = current_metadata_ways;
+        uint32_t target_metadata_ways = current_metadata_ways;
         uint64_t best_score = 0;
 
-        for (uint8_t x = 0; x <= MAX_METADATA_WAYS; ++x) {
+        for (uint32_t x = 0; x <= max_metadata_ways; ++x) {
             if (set_prefetch_score[x] > best_score) {
                 best_score = set_prefetch_score[x];
                 target_metadata_ways = x;
@@ -1273,15 +1243,11 @@ class triangel: public champsim::modules::prefetcher{
         bool should_change = (target_metadata_ways != current_metadata_ways) && (target_score > biased_current_score);
 
         if (should_change) {
-            const uint8_t new_metadata_ways = std::min<uint8_t>(target_metadata_ways, address_map_max_ways);
-
-            // Repartition LLC ways. Metadata ways are removed from normal LLC capacity. The invalidate-only
-            // shrink always applies immediately, so no deferral/retry is needed.
-            uint32_t llc_available_ways = LLC_WAYS;
-            if (llc_cache != nullptr) {
-                llc_available_ways = llc_cache->NUM_WAY > new_metadata_ways ? llc_cache->NUM_WAY - new_metadata_ways : 1;
-                llc_cache->set_available_ways(llc_available_ways);
-            }
+            const uint8_t new_metadata_ways =  std::min<uint32_t>(target_metadata_ways, max_metadata_ways);
+            
+            uint32_t llc_available_ways = llc_cache->NUM_WAY;
+            llc_available_ways = llc_cache->NUM_WAY > new_metadata_ways ? llc_cache->NUM_WAY - new_metadata_ways : 1;
+            llc_cache->set_available_ways(llc_available_ways);
 
             current_metadata_ways = new_metadata_ways;
             repartition++;
@@ -1305,7 +1271,7 @@ class triangel: public champsim::modules::prefetcher{
 
         if constexpr (TRIANGEL_DEBUG_PRINT) {
             std::cout << "[TRIANGEL] End of set-dueling epoch\n";
-            for (uint8_t x = 0; x <= MAX_METADATA_WAYS; ++x) {
+            for (uint32_t x = 0; x <= max_metadata_ways; ++x) {
                 std::cout << "  metadata_ways=" << static_cast<uint32_t>(x)
                           << " score=" << set_prefetch_score[x] << std::endl;
             }
@@ -1342,18 +1308,49 @@ public:
     }
 
     void set_llc_reference(CACHE* llc) {
+        if (llc == nullptr)
+            assert(false);
+
+        if (llc_cache != nullptr) {
+            assert(llc_cache == llc);
+            return;
+        }
+
         llc_cache = llc;
 
-        // Set the original partition immediately so the LLC starts with the full associativity.
-        if (llc_cache != nullptr) {
-            llc_cache->set_available_ways(LLC_WAYS);
-        }
+        max_metadata_ways = static_cast<uint32_t>(llc_cache->NUM_WAY / 2);
+        const uint64_t llc_lines = static_cast<uint64_t>(llc_cache->NUM_SET) * llc_cache->NUM_WAY;
+        assert((llc_lines % 2) == 0);
+
+        address_map_num_sets = llc_lines / 2;
+        address_map_actual_entries = address_map_num_sets * address_map_actual_cache_assoc;
+        address_map_rounded_entries = address_map_num_sets * address_map_rounded_cache_assoc;
+        size_increment = address_map_actual_entries / max_metadata_ways;
+        max_size = address_map_actual_entries;
+
+        assert(address_map_actual_entries % max_metadata_ways == 0);
+        assert(address_map_actual_entries / address_map_actual_cache_assoc ==
+               address_map_rounded_entries / address_map_rounded_cache_assoc);
+
+        markov_table = LRURPSetAssocCache<metadata>(
+            static_cast<int>(address_map_rounded_entries),
+            address_map_rounded_cache_assoc);
+        markov_table.set_way_allocation_max(address_map_actual_cache_assoc);
+
+        set_prefetch_score.assign(static_cast<std::size_t>(llc_cache->NUM_WAY) + 1, 0);
+
+        current_metadata_ways = 0;
+        all = 0;
+        size_duel_tick = 0;
+        size_duels_initialized = false;
+
+        llc_cache->set_available_ways(llc_cache->NUM_WAY);
     }
 
     //define the functions which used by Triangle
     void log( uint64_t ip, uint64_t addr){
 
-      //store the ip not appear before or make the metadata 
+      //store the ip not appear before or make the metadata
       auto cur = train_table.find_entry(ip);
 
 
@@ -1363,8 +1360,8 @@ public:
         if(cur->pattern_conf1 >= 14) cur->lookahead =true;
         if(cur->pattern_conf0 < 7) cur->lookahead =false;
 
-        uint32_t sampler_tag = flexible_hash(cur->last_addr1, 23);
-        sampler_entry access_A(sampler_tag, ip, addr, cur->local_timestamp+1);
+        uint32_t sampler_key = cur->last_addr1;
+        sampler_entry access_A(sampler_key, ip, addr, cur->local_timestamp+1);
 
         const bool should_pf = (cur->reuse_conf > 7) && (cur->pattern_conf0 > 7);
 
@@ -1394,12 +1391,12 @@ public:
 
         //Update the status of train_entry
         //search history sampler to judge update patternconf and reuseconf
-        sampler_entry* access_B = sampler.find_entry(sampler_tag);
+        sampler_entry* access_B = sampler.find_entry(sampler_key);
 
         if (access_B != nullptr && access_A.train_pc == access_B->train_pc) {
             int64_t distance = cur->local_timestamp - access_B->timestamp;
 
-            if (distance > 0 && distance < static_cast<int64_t>(max_size)) {
+            if (distance > 0 && distance < max_size) {
               if (cur->reuse_conf < 15) cur->reuse_conf++;
             }
             else if (!access_B->hit) {
@@ -1419,7 +1416,7 @@ public:
                 if (cur->pattern_conf1 < 15) cur->pattern_conf1++;
               }
             }
-            else { //TODO; check whether cache contains target
+            else {
               ssampler_entry access_a(access_B->target_addr, ip, timestamp);
               ssampler_entry access_b = ssampler.set(access_B->target_addr, access_a);
 
@@ -1443,17 +1440,17 @@ public:
             // Update the sampler's target addr with current addr
             access_B->target_addr = access_A.target_addr;
         } else if (should_sample(cur->sample_rate)){
-          sampler_entry evicted_B = sampler.set(sampler_tag, access_A);
-          if (evicted_B!=access_A){
+          sampler_entry access_B = sampler.set(sampler_key, access_A);
+          if (access_B!=access_A){
             sample_entry_number++;
-            auto vic_train = train_table.find_entry(evicted_B.train_pc);
+            auto vic_train = train_table.find_entry(access_B.train_pc);
             if (vic_train != nullptr){
-              int64_t distance = vic_train->local_timestamp - evicted_B.timestamp;
-              if (distance > static_cast<int64_t>(max_size)){
-                train_table.access_entry(evicted_B.train_pc);
-                if(!evicted_B.hit && vic_train->reuse_conf>0) vic_train->reuse_conf--;
+              int64_t distance = vic_train->local_timestamp - access_B.timestamp;
+              if (distance > max_size){
+                train_table.access_entry(access_B.train_pc);
+                if(!access_B.hit && vic_train->reuse_conf>0) vic_train->reuse_conf--;
                 if(cur->sample_rate<15) cur->sample_rate++;
-              } else if(distance > 0 && !evicted_B.hit && cur->sample_rate>0){
+              } else if(distance > 0 && !access_B.hit && cur->sample_rate>0){
                 cur->sample_rate--;
               }
             } else {
@@ -1465,19 +1462,15 @@ public:
         //according to partition ways to allocate metadata
         if ((current_metadata_ways > 0) && (cur->reuse_conf > 7) && (cur->pattern_conf0 > 7)) {
 
-          critic_IP.emplace(cur->PC_tag);
-          total_metadata++;
-
           const uint64_t metadata_key = cur->lookahead ? cur->last_addr0 : cur->last_addr1;
           const uint64_t metadata_set = metadata_set_index(metadata_key, current_metadata_ways);
           metadata cor_addr(metadata_key, addr);
 
+          markov_table_accesses++;
           metadata* pre_cor_addr = markov_table.get(metadata_key, metadata_set);
 
           if (!pre_cor_addr) {
               markov_table.set(metadata_key, cor_addr, metadata_set);
-              in_metadata[metadata_key] = false;
-              total_metadata1++;
           }
           else {
               bool was_confident = pre_cor_addr->conf != 0;
@@ -1568,8 +1561,6 @@ public:
         : champsim::modules::prefetcher(cache),
           target_cache(cache)
     {
-        assert(markov_table.get_num_sets() == static_cast<int>(address_map_num_sets));
-        markov_table.set_way_allocation_max(address_map_actual_cache_assoc);
     }
 
     uint32_t prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit, bool useful_prefetch, access_type type,

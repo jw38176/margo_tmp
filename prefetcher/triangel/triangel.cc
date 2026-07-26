@@ -1,22 +1,34 @@
 #include "triangel.h"
 
-//#define DEBUG
+//The following 7 things are the shared state between all multicore Triangels
+uint64_t triangel::address_map_actual_entries = 0;
+uint64_t triangel::address_map_rounded_entries = 0;
+uint64_t triangel::address_map_num_sets = 0;
+uint64_t triangel::size_increment = 0;
+uint64_t triangel::max_size = 0;
+uint32_t triangel::max_metadata_ways = 0;
 
-#ifdef DEBUG
-
-set<uint64_t> critic_IP{};
-uint64_t total_metadata = 0;
-uint64_t total_metadata1 = 0;
-uint64_t time_pre_fail = 0;
-uint64_t time_pre_success = 0;
-
-#endif
-
+uint64_t triangel::all = 0;
+uint8_t triangel::current_metadata_ways = 0;
+LRURPSetAssocCache<metadata> triangel::markov_table{
+    triangel::address_map_rounded_cache_assoc,
+    triangel::address_map_rounded_cache_assoc
+};
+std::vector<duller_entry> triangel::size_duels(NUM_SIZE_DUELERS);
+bool triangel::size_duels_initialized = false;
+std::mt19937_64 triangel::size_duel_rng{0xC0FFEEULL};
+std::mt19937_64 triangel::rng{0x12345678ULL};
+std::vector<uint64_t> triangel::set_prefetch_score{};
+uint64_t triangel::repartition = 0;
+uint64_t triangel::size_duel_tick = 0;
+CACHE* triangel::llc_cache = nullptr;
 
 std::vector<triangel::Candidate> triangel::prefetch_candidates(champsim::address addr, champsim::address ip, uint8_t cache_hit, bool useful_prefetch,
                                                                access_type type, uint32_t metadata_in, bool allow_training)
 {
     (void)metadata_in;
+
+    assert(llc_cache != nullptr);
 
     std::vector<Candidate> candidates;
 
@@ -64,29 +76,12 @@ uint32_t triangel::prefetcher_cache_operate(champsim::address addr, champsim::ad
 
 uint32_t triangel::prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr, uint32_t metadata_in)
 {
-  //uint64_t line_addr = (addr.to<uint64_t>() >> LOG2_BLOCK_SIZE);            // Line addr
-  //uint64_t line_evicted = (evicted_addr >> LOG2_BLOCK_SIZE); // Line addr
-
-  // Add to the shadow cache
-  //this->corres_cache_add(set, way, line_addr, prefetch);
   return metadata_in;
 }
 
-void triangel::prefetcher_final_stats() {
-  cout<<"Repartition times: "<<repartition<<'\n';
-  cout<<"Critic IP: "<<critic_IP.size()<<endl;
-  cout<<"Markov Insert Entries: "<<total_metadata<<endl;
-  cout<<"Markov Entries: "<<total_metadata1<<endl;
-  cout<<"Metadata_Miss: "<<time_pre_fail<<endl;
-  cout<<"Metadata_Hit: "<<time_pre_success<<endl;
-  for (const auto &item : in_metadata){
-    if (item.second == true) useful_entry_number++;
-    else useless_entry_number++;
-  }
-  cout<<"Useful_Entry: "<<useful_entry_number<<endl;
-  cout<<"Useless_Entry: "<<useless_entry_number<<endl;
- }
-
-void triangel::prefetcher_cycle_operate() {
-  current_cycle++;
+void triangel::prefetcher_final_stats()
+{
+    std::cout << "TRIANGEL Markov table accesses: " << markov_table_accesses << std::endl;
 }
+
+void triangel::prefetcher_cycle_operate() {}

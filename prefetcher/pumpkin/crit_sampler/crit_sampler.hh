@@ -40,30 +40,22 @@ public:
   // latency was on the critical path.
   struct crit_sampler_entry
   {
-    champsim::address line_addr;
+    uint64_t line_tag{0};                // Hashed, truncated tag of the tracked line (storage-efficient)
     champsim::address trigger_pc;        // Demand load PC, used to index the criticality counter
-    uint64_t first_request_timestamp{0}; // First real fetch (prefetch or demand miss); kept earliest
+    uint64_t first_request_timestamp{0}; // First real fetch (prefetch or demand miss); kept earliest (masked)
     uint64_t natural_latency{0};         // "Latency": fill_time - first_request_timestamp, frozen at first fill
-    uint64_t demand_issue_time{0};       // "Issue Time": cycle the demand load issued from the CPU
+    uint64_t demand_issue_time{0};       // "Issue Time": cycle the demand load issued from the CPU (masked)
     uint64_t instr_id{0};                // Demand load instruction id
-    uint64_t fill_time{0};               // Cycle the line became available in cache (observability)
-    uint64_t rob_head_time{0};           // Cycle the demand load first reached the head of the ROB
+    uint64_t fill_time{0};               // Cycle the line became available in cache (masked, observability)
+    uint64_t rob_head_time{0};           // Cycle the demand load first reached the head of the ROB (masked)
 
     bool has_demand{false};       // A demand load has been associated (instr_id valid)
     bool filled{false};           // Line is resident (fill observed or demand hit) so completion can occur
     bool reached_rob_head{false}; // Demand load has reached the head of the ROB
     bool valid{true};             // Cleared once reported so it is not double-counted
 
-    auto index() const
-    {
-      using namespace champsim::data::data_literals;
-      return line_addr.slice_upper<6_b>();
-    }
-    auto tag() const
-    {
-      using namespace champsim::data::data_literals;
-      return line_addr.slice_upper<6_b>();
-    }
+    auto index() const { return line_tag; }
+    auto tag() const { return line_tag; }
   };
 
   struct EvictionEvent
@@ -114,8 +106,8 @@ private:
   champsim::msl::lru_table<crit_sampler_entry> _crit_sampler_table{_crit_sampler_sets, _crit_sampler_ways};
 
   // Routes ROB-head notifications (which only carry an instr_id) to the
-  // line-indexed sampler table.
-  std::unordered_map<uint64_t, champsim::address> _instr_id_to_line;
+  // line-indexed sampler table via the line's hashed tag.
+  std::unordered_map<uint64_t, uint64_t> _instr_id_to_line;
 
   // Diagnostic: ROB-head events that hit a tracked demand entry that was never filled.
   uint64_t _rob_heads_without_fill{0};

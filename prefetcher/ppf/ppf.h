@@ -37,6 +37,15 @@ struct ppf : public champsim::modules::prefetcher {
   void prefetcher_cycle_operate();
   void prefetcher_final_stats();
 
+  // Forward the simulator-provided LLC reference to sub-prefetchers such as
+  // Triangel that use LLC geometry and dynamically partition LLC ways.
+  void set_llc_reference(CACHE* llc)
+  {
+    for (auto& wrapped_prefetcher : _wrapped_prefetchers) {
+      wrapped_prefetcher->set_llc_reference(llc);
+    }
+  }
+
 private:
   // ─── Sub-prefetchers ──────────────────────────────────────────────
   std::size_t _n{0};
@@ -44,16 +53,16 @@ private:
 
   // ─── Perceptron feature layout ────────────────────────────────────
   //
-  // Features (replacing SPP-specific signature/delta/confidence/depth):
+  // Features (prefetcher-agnostic; derived from the candidate, its trigger
+  // IP, recent IP history, and the delta to the base access):
   //   0  pf_addr                                   depth PERC_ENTRIES/2
   //   1  pf_addr >> LOG2_BLOCK_SIZE  (cache line)   depth PERC_ENTRIES
   //   2  pf_addr >> LOG2_PAGE_SIZE   (page)         depth PERC_ENTRIES
-  //   3  trigger_ip ^ page_addr                     depth PERC_ENTRIES
-  //   4  trigger_ip ^ prefetcher_id                 depth PERC_ENTRIES/4
+  //   3  trigger_ip ^ pf_addr                       depth PERC_ENTRIES
+  //   4  trigger_ip                                 depth PERC_ENTRIES/4
   //   5  ip_1 ^ (ip_2>>1) ^ (ip_3>>2)              depth PERC_ENTRIES
-  //   6  trigger_ip ^ cache_line                    depth PERC_ENTRIES/4
-  //   7  page_addr  ^ prefetcher_id                 depth PERC_ENTRIES/2
-  //   8  prefetcher_id                              depth PERC_ENTRIES/32
+  //   6  page offset                                 depth PERC_ENTRIES/64
+  //   7  delta = pf_line - base_line   (signed)     depth PERC_ENTRIES/2
   //
   // The perceptron feature-index depths are configuration shared by every
   // sub-prefetcher; the weights themselves live in each per-prefetcher filter.
@@ -67,7 +76,7 @@ private:
     uint64_t pf_addr{0};
     uint64_t trigger_ip{0};
     uint64_t ip_1{0}, ip_2{0}, ip_3{0};
-    uint32_t prefetcher_id{0};
+    int64_t delta{0};
     int32_t perc_sum{0};
     bool valid{false};
     bool useful{false};
@@ -82,7 +91,7 @@ private:
     uint64_t pf_addr{0};
     uint64_t trigger_ip{0};
     uint64_t ip_1{0}, ip_2{0}, ip_3{0};
-    uint32_t prefetcher_id{0};
+    int64_t delta{0};
     int32_t perc_sum{0};
     bool valid{false};
   };
@@ -101,20 +110,28 @@ private:
   std::vector<PerceptronFilter> _filters;
 
   void perc_get_index(uint64_t pf_addr, uint64_t trigger_ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3,
-                      uint32_t prefetcher_id, uint64_t perc_set[ppf_params::PERC_FEATURES]) const;
+                      int64_t delta, uint64_t perc_set[ppf_params::PERC_FEATURES]) const;
   int32_t perc_predict(const PerceptronFilter& pf, uint64_t pf_addr, uint64_t trigger_ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3,
-                       uint32_t prefetcher_id) const;
+                       int64_t delta) const;
+  // predicted_pf is the decision actually taken for this candidate (issued vs
+  // rejected). It must not be re-derived from perc_sum: sums in
+  // [PERC_THRESHOLD_LO, PERC_THRESHOLD_HI) are issued to the lower level, so a
+  // threshold comparison would invert their training direction.
   void perc_update(PerceptronFilter& pf, uint64_t pf_addr, uint64_t trigger_ip, uint64_t ip_1, uint64_t ip_2, uint64_t ip_3,
-                   uint32_t prefetcher_id, bool direction, int32_t perc_sum);
+                   int64_t delta, bool predicted_pf, bool direction, int32_t perc_sum);
 
   void filter_train_demand(PerceptronFilter& pf, uint64_t addr);
   void filter_train_evict(PerceptronFilter& pf, uint64_t addr);
   bool filter_check_dup(const PerceptronFilter& pf, uint64_t pf_addr) const;
-  void filter_add(PerceptronFilter& pf, uint64_t pf_addr, uint64_t trigger_ip, uint32_t prefetcher_id, int32_t perc_sum);
-  void reject_add(PerceptronFilter& pf, uint64_t pf_addr, uint64_t trigger_ip, uint32_t prefetcher_id, int32_t perc_sum);
+  void filter_add(PerceptronFilter& pf, uint64_t pf_addr, uint64_t trigger_ip, int64_t delta, int32_t perc_sum);
+  void reject_add(PerceptronFilter& pf, uint64_t pf_addr, uint64_t trigger_ip, int64_t delta, int32_t perc_sum);
 
   // ─── IP history ──────────────────────────────────────────────────
   uint64_t _ip_0{0}, _ip_1{0}, _ip_2{0}, _ip_3{0};
+
+  // Most recent demand address, used as the delta base for candidates that are
+  // produced outside a demand access (cycle_operate).
+  uint64_t _last_addr{0};
 
   // ─── Per-sub-prefetcher stats ────────────────────────────────────
   struct PrefetchStats {
@@ -128,7 +145,7 @@ private:
   uint64_t _perc_pass{0};
   uint64_t _perc_reject{0};
 
-  void process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id);
+  void process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id, uint64_t base_addr);
 
   static uint64_t hash(uint64_t key);
   static const char* sub_prefetcher_name(std::size_t prefetcher_id);

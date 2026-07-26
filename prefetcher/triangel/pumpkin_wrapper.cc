@@ -22,10 +22,15 @@ public:
     const bool is_miss = (cache_hit == 0);
     const bool allow_training = !_training_gate || _training_gate(ip, is_miss);
 
+    // Filtered inputs are still shown to Triangel, but as a store, so the set dueller's
+    // L3/cache-side accounting (independent of filtering) is preserved while training and
+    // Markov-side credit are withheld.
+    const access_type effective_type = allow_training ? type : access_type::WRITE;
+
     // Unlike most sub-prefetchers, triangel also consumes WRITE accesses (for its cache-side set
     // dueling), so all access types are forwarded and filtered inside prefetch_candidates().
     std::vector<pumpkin_wrappers::WrappedPrefetch> candidates;
-    for (auto& candidate : _prefetcher.prefetch_candidates(addr, ip, cache_hit, useful_prefetch, type, metadata_in, allow_training)) {
+    for (auto& candidate : _prefetcher.prefetch_candidates(addr, ip, cache_hit, useful_prefetch, effective_type, metadata_in, allow_training)) {
       candidates.push_back({candidate.address, candidate.trigger_ip, candidate.fill_this_level, candidate.metadata, std::move(candidate.notify_result)});
     }
 
@@ -44,6 +49,8 @@ public:
     _prefetcher.prefetcher_cycle_operate();
     return {};
   }
+
+  void final_stats() final { _prefetcher.prefetcher_final_stats(); }
 
   void set_llc_reference(CACHE* llc) final { _prefetcher.set_llc_reference(llc); }
 

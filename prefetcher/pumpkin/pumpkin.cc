@@ -10,6 +10,7 @@
 #include "../sub_prefetcher/sub_prefetcher_config.hh"
 #include "cache.h"
 #include "criticality_rob_head_bridge.h"
+#include "pumpkin_masking.hh"
 
 namespace
 {
@@ -22,6 +23,10 @@ uint64_t cycle_of(const CACHE* cache)
 {
   return static_cast<uint64_t>(cache->current_time.time_since_epoch() / cache->clock_period);
 }
+
+// Cycle truncated to the sampler timestamp width. Every cycle handed to a sampler
+// goes through here so the samplers only ever store masked timestamps.
+uint64_t masked_cycle(const CACHE* cache) { return pumpkin_masking::mask_timestamp(cycle_of(cache)); }
 
 } // namespace
 
@@ -45,6 +50,13 @@ void pumpkin::set_llc_reference(CACHE* llc)
 {
   if (controller != nullptr)
     controller->set_llc(llc);
+
+  // Forward the LLC reference to sub-prefetchers that drive LLC way partitioning
+  // (e.g. triangel). Without this the wrapped sub-prefetcher never learns the LLC
+  // geometry and its shared metadata state stays uninitialized.
+  for (auto& wrapped_prefetcher : _wrapped_prefetchers) {
+    wrapped_prefetcher->set_llc_reference(llc);
+  }
 }
 
 // Filter prefetch request candidates by sub-prefetchers through the controller, record in pf_sampler, and issue unfiltred prefetches.
@@ -57,7 +69,7 @@ void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>&
 
     // PUMPKIN: Leak filtered prefetches
     bool will_pf = should_pf;
-    if (!should_pf && (rand_u64() % pumpkin_params::NEGATIVE_LEAK_INV_PROB) == 0) {
+    if (pumpkin_params::ENABLE_NEGATIVE_LEAK && !should_pf && (rand_u64() % pumpkin_params::NEGATIVE_LEAK_INV_PROB) == 0) {
       will_pf = true;
     }
 
@@ -73,13 +85,16 @@ void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>&
     // PUMPKIN: Record prefetch in pf_sampler
     if (!in_cache && pf_sampler.should_sample(pf_line_addr))
     {
-      if (auto cap_evt = pf_sampler.record_prefetch(pf_line_addr, current_cycle, candidate.trigger_ip, prefetcher_id, will_pf);
+      // Probe LLC residency eagerly while the full address is still available;
+      // the sampler stores only a truncated tag afterwards.
+      const bool llc_resident = controller->in_llc(pf_line_addr);
+      if (auto cap_evt = pf_sampler.record_prefetch(pf_line_addr, current_cycle, candidate.trigger_ip, prefetcher_id, will_pf, llc_resident);
           cap_evt.has_value()) {
         controller->process_eviction_event(*cap_evt, current_cycle);
       }
     }
 
-    // PUMPKIN: Record prefetch in crit_sampler
+    // PUMPKIN: Record prefetch in crit_sampler (prefetches that are actually issued)
     if (crit_sampler.should_sample(pf_line_addr) && will_pf && !in_cache && !in_mshr)
     {
       crit_sampler.record_prefetch(pf_line_addr, current_cycle);
@@ -115,7 +130,7 @@ void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>&
 // PUMPKIN: Process a tracked instruction reaching the head of the ROB
 void pumpkin::on_rob_head(uint64_t instr_id, uint64_t cycle)
 {
-  if (auto crit_evt = crit_sampler.notify_rob_head(instr_id, cycle); crit_evt.has_value())
+  if (auto crit_evt = crit_sampler.notify_rob_head(instr_id, pumpkin_masking::mask_timestamp(cycle)); crit_evt.has_value())
   {
     assert(controller != nullptr);
     controller->process_criticality_event(*crit_evt);
@@ -163,7 +178,7 @@ void pumpkin::prefetcher_initialize()
 void pumpkin::prefetcher_cycle_operate()
 {
 
-  const uint64_t current_cycle = cycle_of(intern_);
+  const uint64_t current_cycle = masked_cycle(intern_);
 
   // SUB-PREFETCHER HANDOFF
   for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id) {
@@ -181,7 +196,7 @@ void pumpkin::prefetcher_cycle_operate()
 uint32_t pumpkin::prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit, bool useful_prefetch, access_type type,
                                           uint32_t metadata_in)
 {
-  const uint64_t current_cycle = cycle_of(intern_);
+  const uint64_t current_cycle = masked_cycle(intern_);
   const champsim::address current_line_addr = line_of(addr);
 
   // PUMPKIN: Positive training for demand access
@@ -226,7 +241,7 @@ uint32_t pumpkin::prefetcher_cache_operate(champsim::address addr, champsim::add
 uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long way, uint8_t prefetch, champsim::address evicted_addr,
                                        uint32_t metadata_in)
 {
-  const uint64_t cycle = cycle_of(intern_);
+  const uint64_t cycle = masked_cycle(intern_);
 
   if (prefetch)
   {
@@ -336,22 +351,8 @@ void pumpkin::prefetcher_final_stats()
   std::cout << "  Critical:     " << total_critical_loads << " (" << pct(total_critical_loads, total_recorded_loads) << "%)" << std::endl;
   std::cout << "  Non-critical: " << total_non_critical_loads << " (" << pct(total_non_critical_loads, total_recorded_loads) << "%)" << std::endl;
 
-  // Sampler sizing. Each sampler owns an adaptive gate that only sparsens (raises
-  // the train ratio above its floor) when its fixed-size table evicts live
-  // entries faster than the cache evicts lines, i.e. when the table cannot keep
-  // up at the current sampling density. A ratio that never leaves the floor means
-  // the table is large enough (with headroom) for this workload; one driven
-  // upward means the working set outgrows the table at full density. The prefetch
-  // and criticality samplers tune independently from their own eviction events.
   const auto print_sampler_sizing = [](const char* name, const Sampler::SamplerStats& s)
   {
-    const char* sizing_verdict;
-    if (s.peak_train_ratio <= s.min_train_ratio)
-      sizing_verdict = "yes - gate stayed at its floor, table has headroom at max density";
-    else if (s.train_ratio <= s.min_train_ratio)
-      sizing_verdict = "borderline - transient pressure, but settled back at the floor";
-    else
-      sizing_verdict = "no - sustained table pressure, running below max density";
 
     std::cout << std::endl << "PUMPKIN " << name << " Sizing Stats" << std::endl;
     std::cout << "  Final train ratio:  1-in-" << s.train_ratio << " (floor 1-in-" << s.min_train_ratio << ", ceiling 1-in-" << s.max_train_ratio << ")"
@@ -359,7 +360,6 @@ void pumpkin::prefetcher_final_stats()
     std::cout << "  Peak train ratio:   1-in-" << s.peak_train_ratio << std::endl;
     std::cout << "  Retunes:            " << s.retune_up << " sparser (table pressure), " << s.retune_down << " denser (table headroom)" << std::endl;
     std::cout << "  Calibration evicts: " << s.table_evicts_total << " sampler-table, " << s.cache_evicts_total << " cache" << std::endl;
-    std::cout << "  Large enough?       " << sizing_verdict << std::endl;
   };
 
   print_sampler_sizing("Prefetch Sampler", pf_sampler.stats());
@@ -398,6 +398,11 @@ void pumpkin::prefetcher_final_stats()
 
   controller->print_filter_table_stats(std::cout, [](std::size_t prefetcher_id) { return sub_prefetcher_name(prefetcher_id); });
   controller->print_coverage_filter_stats(std::cout);
+
+  for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id) {
+    if (std::strcmp(sub_prefetcher_name(prefetcher_id), "triangel") == 0)
+      _wrapped_prefetchers[prefetcher_id]->final_stats();
+  }
 
   std::cout << "================================================" << std::endl;
 }

@@ -1,5 +1,7 @@
 #include "pf_sampler.hh"
 
+#include "../pumpkin_masking.hh"
+
 PfSampler::PfSampler(std::size_t pf_sampler_sets, std::size_t pf_sampler_ways) : _pf_sampler_sets(pf_sampler_sets), _pf_sampler_ways(pf_sampler_ways) {}
 
 PfSampler::~PfSampler() = default;
@@ -13,10 +15,10 @@ void PfSampler::init(std::size_t num_prefetchers)
 }
 
 std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::address pf_line_addr, uint64_t cycle, champsim::address src_pc,
-                                                               std::size_t prefetcher_id, bool prefetched)
+                                                               std::size_t prefetcher_id, bool prefetched, bool llc_resident)
 {
   pf_sampler_entry probe{};
-  probe.pf_line_addr = pf_line_addr;
+  probe.line_tag = pumpkin_masking::make_line_tag(pf_line_addr);
 
   // If a pf_sampler entry already exists for this line, merge into it rather than overwriting.
   if (auto hit = _pf_sampler_table.check_hit(probe); hit.has_value())
@@ -76,7 +78,7 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
   }
 
   pf_sampler_entry e{};
-  e.pf_line_addr = pf_line_addr;
+  e.line_tag = pumpkin_masking::make_line_tag(pf_line_addr);
   e.fill_latency = 0;
   e.first_request_timestamp = cycle;
   if (delay_subtimely_training)
@@ -89,6 +91,7 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
   e.in_cache = false;
   e.useful = false;
   e.valid = true;
+  e.llc_resident_at_record = llc_resident;
 
   if (prefetcher_id < _num_prefetchers)
   {
@@ -122,7 +125,7 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
 std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle, bool from_dram)
 {
   pf_sampler_entry probe{};
-  probe.pf_line_addr = pf_line_addr;
+  probe.line_tag = pumpkin_masking::make_line_tag(pf_line_addr);
 
   auto hit = _pf_sampler_table.check_hit(probe);
   if (!hit.has_value())
@@ -130,10 +133,14 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_fill(champsim::a
 
   pf_sampler_entry updated = hit.value();
 
-  // Calculate fill latency
-  if (updated.fill_latency == 0 && cycle >= updated.first_request_timestamp)
+  // Calculate fill latency using wrap-safe modular subtraction of the masked
+  // timestamps. Discard an implausibly large delta (a wrap artifact), mirroring
+  // berti's cant_track_latency behaviour.
+  if (updated.fill_latency == 0)
   {
-    updated.fill_latency = cycle - updated.first_request_timestamp;
+    const uint64_t d = pumpkin_masking::timestamp_delta(cycle, updated.first_request_timestamp);
+    if (d != 0 && d <= pumpkin_params::TIMESTAMP_HALF)
+      updated.fill_latency = d;
   }
 
   updated.in_cache = true;
@@ -160,7 +167,7 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_fill(champsim::a
 std::optional<PfSampler::EvictionEvent> PfSampler::notify_demand_access(champsim::address line_addr, uint64_t cycle, champsim::address demand_pc)
 {
   pf_sampler_entry probe{};
-  probe.pf_line_addr = line_addr;
+  probe.line_tag = pumpkin_masking::make_line_tag(line_addr);
 
   auto hit = _pf_sampler_table.check_hit(probe);
   if (!hit.has_value())
@@ -208,7 +215,7 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_demand_access(champsim
 std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_evict(champsim::address line_addr)
 {
   pf_sampler_entry probe{};
-  probe.pf_line_addr = line_addr;
+  probe.line_tag = pumpkin_masking::make_line_tag(line_addr);
 
   auto hit = _pf_sampler_table.check_hit(probe);
   if (!hit.has_value())
