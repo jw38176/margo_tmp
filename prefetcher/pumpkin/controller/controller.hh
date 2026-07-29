@@ -99,6 +99,9 @@ public:
 
   bool should_prefetch(champsim::address access_pc, std::size_t prefetcher_id);
 
+  // Decrease the CU(Y) for a miss in the sampled set that is not covered
+  void decrease_cu(champsim::address demand_pc);
+
   // Gate for whether Triangel should be told about (trained on) an access at
   // this PC. On a covered access the product Crit(Y) * (1 - CU(Y)) is compared
   // against a threshold; on a miss only Crit(Y) is used.

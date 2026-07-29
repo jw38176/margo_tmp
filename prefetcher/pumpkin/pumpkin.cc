@@ -76,17 +76,16 @@ void pumpkin::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>&
     // PUMPKIN: Get prefetch address
     const auto pf_line_addr = line_of(candidate.address);
 
-    // PUMPKIN: Skip Redundant Prefetches
+    // PUMPKIN: Check if prefetch is in cache
     const bool in_cache = intern_->in_cache(pf_line_addr);
 
-    // PUMPKIN: Check if prefetch is in MSHR
+    // PUMPKIN: Check if prefetch is MSHR Hit
     const bool in_mshr = intern_->in_mshr(pf_line_addr);
 
     // PUMPKIN: Record prefetch in pf_sampler
+    // (MSHR hit is still recorded)
     if (!in_cache && pf_sampler.should_sample(pf_line_addr))
     {
-      // Probe LLC residency eagerly while the full address is still available;
-      // the sampler stores only a truncated tag afterwards.
       const bool llc_resident = controller->in_llc(pf_line_addr);
       if (auto cap_evt = pf_sampler.record_prefetch(pf_line_addr, current_cycle, candidate.trigger_ip, prefetcher_id, will_pf, llc_resident);
           cap_evt.has_value()) {
@@ -198,6 +197,13 @@ uint32_t pumpkin::prefetcher_cache_operate(champsim::address addr, champsim::add
 {
   const uint64_t current_cycle = masked_cycle(intern_);
   const champsim::address current_line_addr = line_of(addr);
+
+  // PUMPKIN: Demand miss handling for CU
+  // (For a load that is not covered, it is in the sampled set, decrease CU(Y))
+  if (type == access_type::LOAD && !cache_hit && pf_sampler.should_sample(current_line_addr))
+  {
+    controller->decrease_cu(ip);
+  }
 
   // PUMPKIN: Positive training for demand access
   if (auto access_evt = pf_sampler.notify_demand_access(current_line_addr, current_cycle, ip); access_evt.has_value())

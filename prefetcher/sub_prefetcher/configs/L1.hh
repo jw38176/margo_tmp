@@ -14,9 +14,9 @@ namespace pumpkin_wrappers
 
 inline constexpr auto SUB_PREFETCHERS = std::array{
     SubPrefetcherConfig{"ip_stride", make_ip_stride_pumpkin_wrapper},
-    SubPrefetcherConfig{"caerus", make_caerus_pumpkin_wrapper},
     SubPrefetcherConfig{"bingo", make_bingo_pumpkin_wrapper},
     SubPrefetcherConfig{"pythia", make_pythia_pumpkin_wrapper},
+    SubPrefetcherConfig{"caerus", make_caerus_pumpkin_wrapper},
 };
 
 } // namespace pumpkin_wrappers

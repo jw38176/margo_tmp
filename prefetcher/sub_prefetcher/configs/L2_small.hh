@@ -17,7 +17,7 @@ namespace pumpkin_wrappers
 {
 
 inline constexpr auto SUB_PREFETCHERS = std::array{
-    SubPrefetcherConfig{"ip_stride", make_ip_stride_pumpkin_wrapper},
+    SubPrefetcherConfig{"next_line", make_next_line_pumpkin_wrapper},
     SubPrefetcherConfig{"mlop", make_mlop_pumpkin_wrapper},
     SubPrefetcherConfig{"pmp", make_pmp_pumpkin_wrapper},
     SubPrefetcherConfig{"triangel", make_triangel_pumpkin_wrapper},

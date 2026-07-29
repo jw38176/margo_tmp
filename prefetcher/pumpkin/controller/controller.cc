@@ -353,17 +353,6 @@ void Controller::process_eviction_event(const PfSampler::EvictionEvent& event, u
       // numerator *= criticality;
       // denominator *= (1 << (pumpkin_params::CRITICALITY_BITS - 1)); // Initialisation value
 
-      // CRIT DISABLE
-      if (pumpkin_params::CU_CRIT_ON)
-      {
-        // Scale by (scale * criticality + (1 - scale))
-        constexpr uint64_t CRITICALITY_SAT = (1 << pumpkin_params::CRITICALITY_BITS) - 1;
-        numerator *= (CRITICALITY_SAT * pumpkin_params::CU_CRIT_SCALE + criticality * (1 - pumpkin_params::CU_CRIT_SCALE));
-        // Scale by constatnt factor
-        numerator *= pumpkin_params::MU_CRIT_CONSTANT;
-        denominator *= CRITICALITY_SAT;
-      }
-
       for (uint64_t inc = 0; inc < marginal_utility_increments; ++inc)
         filter_table_entry.marginal_utility.increment(numerator, denominator);
 
@@ -467,41 +456,14 @@ void Controller::print_filter_table_stats(std::ostream& os, const std::function<
 
 void Controller::print_coverage_filter_stats(std::ostream& os) const { _coverage_filter.print_stats(os); }
 
+void Controller::decrease_cu(champsim::address demand_pc) { _coverage_filter.get(demand_pc).coverage_utility.decrement(); }
+
 bool Controller::should_track_with_triangel(champsim::address pc, bool is_miss) const
 {
-  const ssc& crit_counter = _filter_table.get(pc, 0).criticality;
-  const uint64_t criticality = crit_counter.get_value();
-
   const ssc& coverage_utility = _coverage_filter.get(pc).coverage_utility;
   const uint64_t inverse_coverage = coverage_utility.saturation_value - coverage_utility.get_value();
 
-  constexpr uint64_t CRITICALITY_SAT = (1 << pumpkin_params::CRITICALITY_BITS) - 1;
-
-  // On a miss, gate on (0.25 + 1.5*crit) * (1 - CU)
-  // if (is_miss)
-  // {
-  if (!pumpkin_params::CU_ON)
-  {
-    return true;
-  }
-
-  if (pumpkin_params::CU_CRIT_ON)
-  {
-    float scaled_crit = (CRITICALITY_SAT * pumpkin_params::CU_CRIT_SCALE) + criticality * (1 - pumpkin_params::CU_CRIT_SCALE);
-    return (uint64_t)(scaled_crit * inverse_coverage) > pumpkin_params::TRIANGEL_TRACK_THRESHOLD;
-  }
-  else
-  {
-    return inverse_coverage > pumpkin_params::TEST_THRESHOLD;
-  }
-  // }
-
-  // Otherwise weight criticality by the uncovered fraction (1 - CU), both kept
-  // in fixed point over the counters' saturation range.
-
-  // return true; // Disable filtering for triangel on tag hits
-  // return (CRITICALITY_SAT + 6 * criticality) * inverse_coverage > pumpkin_params::TRIANGEL_TRACK_THRESHOLD * 4 * CRITICALITY_SAT;
-  // return inverse_coverage > pumpkin_params::TEST_THRESHOLD; // CRIT DISABLE
+  return inverse_coverage > pumpkin_params::TEST_THRESHOLD;
 }
 
 bool Controller::should_prefetch(champsim::address access_pc, std::size_t prefetcher_id)

@@ -39,11 +39,6 @@ struct ssc
       --current_value;
   }
 
-  // Step one tick toward the observed fraction numerator/denominator. The
-  // direction (increment vs decrement) is chosen by comparing the counter's
-  // current fraction (current_value / saturation_value) against the observed
-  // fraction; the step probability is the usual ssc rule, based solely on the
-  // current value.
   void update_toward(uint64_t numerator, uint64_t denominator)
   {
     if (denominator == 0)

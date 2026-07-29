@@ -1095,7 +1095,7 @@ class triangel: public champsim::modules::prefetcher{
 
     bool should_sample(uint32_t sample_rate) {
 
-      static std::mt19937_64 rng{std::random_device{}()};
+      static std::mt19937_64 rng{0x9E3779B97F4A7C15ULL};
 
       //Using fixed-point arithmetic instead of floating-point to avoid precision issues
       const uint64_t PRECISION = 1000000000ULL;

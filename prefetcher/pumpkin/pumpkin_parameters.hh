@@ -25,8 +25,8 @@ inline constexpr std::size_t CRITICALITY_BITS = 6;
 inline constexpr uint64_t MARGINAL_UTILITY_THRESHOLD = 32;
 inline constexpr uint64_t LLC_PENALTY = 1;
 inline constexpr uint64_t DRAM_PENALTY = 5;
-inline constexpr uint64_t LLC_REWARD = 1;
-inline constexpr uint64_t DRAM_REWARD = 2;
+inline constexpr uint64_t LLC_REWARD = 3;
+inline constexpr uint64_t DRAM_REWARD = 5;
 
 // Coverage Filter Parameters
 inline constexpr std::size_t COVERAGE_FILTER_SIZE = 256;
@@ -34,9 +34,9 @@ inline constexpr std::size_t COVERAGE_UTILITY_BITS = 6;
 
 // Temporary criticality tunning knobs
 inline constexpr bool CU_CRIT_ON = false;
-inline constexpr bool CU_ON = false;
-inline constexpr float CU_CRIT_SCALE = 0.5; // from 0 to 1
-inline constexpr float MU_CRIT_CONSTANT = 2; // C
+inline constexpr bool CU_ON = true;
+inline constexpr float CU_CRIT_SCALE = 0.125; // from 0 to 1
+inline constexpr float MU_CRIT_CONSTANT = 3;  // C
 
 // Triangel tracking gate thresholds.
 // On a covered access, Triangel is trained when Crit(Y) * (CU_SAT - CU(Y))

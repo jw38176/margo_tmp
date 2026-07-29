@@ -15,7 +15,7 @@
 // #include "configs/6pref.hh"
 
 // *PLACE SCRIPT VARIABLE HERE*
-#include "configs/L2.hh"
+#include "configs/6pref.hh"
 
 
 namespace pumpkin_wrappers
