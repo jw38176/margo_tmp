@@ -328,6 +328,10 @@ void alecto::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& 
     const uint8_t sb_tag = sandbox_tag(block);
     auto& sandbox = _sandbox_table[sb_index];
 
+    // Stats-only residency probe (does not gate prefetch_line()).
+    const champsim::address pf_line_addr{champsim::block_number{candidate.address}};
+    const bool redundant = intern_->in_cache(pf_line_addr) || intern_->in_mshr(pf_line_addr);
+
     bool issued = false;
     const bool fresh = !(sandbox.valid && sandbox.tag == sb_tag);
     if (fresh) {
@@ -335,7 +339,9 @@ void alecto::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& 
       sandbox.tag = sb_tag;
       std::fill(sandbox.issued.begin(), sandbox.issued.end(), false);
       issued = prefetch_line(candidate.address, candidate.fill_this_level, candidate.metadata);
-      if (issued) {
+      if (redundant) {
+        stats.redundant++;
+      } else if (issued) {
         stats.issued++;
       } else {
         stats.not_issued++;
@@ -438,6 +444,7 @@ void alecto::prefetcher_final_stats()
   const uint64_t total_candidates = sum(&prefetch_candidate_stats::candidates);
   const uint64_t total_produced = sum(&prefetch_candidate_stats::produced);
   const uint64_t total_issued = sum(&prefetch_candidate_stats::issued);
+  const uint64_t total_redundant = sum(&prefetch_candidate_stats::redundant);
   const uint64_t total_throttled = sum(&prefetch_candidate_stats::throttled);
   const uint64_t total_deduped = sum(&prefetch_candidate_stats::deduped);
   const uint64_t total_not_issued = sum(&prefetch_candidate_stats::not_issued);
@@ -455,13 +462,14 @@ void alecto::prefetcher_final_stats()
   std::cout << "  Total candidates: " << total_candidates << std::endl;
   std::cout << std::fixed << std::setprecision(2);
   std::cout << "  Issued:    " << total_issued << " (" << pct(total_issued, total_candidates) << "%)" << std::endl;
+  std::cout << "  Redundant (in cache/MSHR): " << total_redundant << " (" << pct(total_redundant, total_candidates) << "%)" << std::endl;
   std::cout << "  Throttled: " << total_throttled << " (" << pct(total_throttled, total_candidates) << "%)" << std::endl;
   std::cout << "  Deduped:   " << total_deduped << " (" << pct(total_deduped, total_candidates) << "%)" << std::endl;
   std::cout << "  Selected but not issued: " << total_not_issued << " (" << pct(total_not_issued, total_candidates) << "%)" << std::endl;
   std::cout << "  Confirmed useful: " << total_useful << " (" << pct(total_useful, total_produced) << "% of produced)" << std::endl;
 
   std::cout << std::endl
-            << "  Per sub-prefetcher (trained | filtered | candidates | produced | issued | useful | throttled | deduped):" << std::endl;
+            << "  Per sub-prefetcher (trained | filtered | candidates | produced | issued | redundant | useful | throttled | deduped):" << std::endl;
   for (std::size_t prefetcher_id = 0; prefetcher_id < _pf_stats.size(); ++prefetcher_id) {
     const auto& stats = _pf_stats[prefetcher_id];
     const uint64_t routes = stats.demand_trained + stats.demand_filtered;
@@ -469,7 +477,7 @@ void alecto::prefetcher_final_stats()
               << " (" << pct(stats.demand_filtered, routes) << "%)"
               << " | cand=" << stats.candidates << " | produced=" << stats.produced << " | issued=" << stats.issued << " ("
               << pct(stats.issued, total_issued) << "% of issued)"
-              << " | useful=" << stats.useful << " (acc " << pct(stats.useful, stats.produced) << "%)"
+              << " | redundant=" << stats.redundant << " | useful=" << stats.useful << " (acc " << pct(stats.useful, stats.produced) << "%)"
               << " | throttled=" << stats.throttled << " | deduped=" << stats.deduped << std::endl;
   }
   std::cout << "================================================" << std::endl;

@@ -369,9 +369,10 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
   if (mshr_entry != MSHR.end()) // miss already inflight
   {
     if (mshr_entry->type == access_type::PREFETCH && handle_pkt.type != access_type::PREFETCH) {
-      // Mark the prefetch as useful
+      // Mark the prefetch as useful, but late: it was still in flight when the demand arrived
       if (mshr_entry->prefetch_from_this) {
         ++sim_stats.pf_useful;
+        ++sim_stats.pf_late;
       }
     }
 
@@ -950,6 +951,7 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_issued = sim_stats.pf_issued;
   roi_stats.pf_useful = sim_stats.pf_useful;
   roi_stats.pf_useless = sim_stats.pf_useless;
+  roi_stats.pf_late = sim_stats.pf_late;
   roi_stats.pf_fill = sim_stats.pf_fill;
 
   for (auto* ul : upper_levels) {

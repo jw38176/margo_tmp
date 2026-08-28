@@ -460,6 +460,8 @@ void Controller::decrease_cu(champsim::address demand_pc) { _coverage_filter.get
 
 bool Controller::should_track_with_triangel(champsim::address pc, bool is_miss) const
 {
+
+  // return true; // CU OFF ABALATION
   const ssc& coverage_utility = _coverage_filter.get(pc).coverage_utility;
   const uint64_t inverse_coverage = coverage_utility.saturation_value - coverage_utility.get_value();
 
@@ -468,11 +470,17 @@ bool Controller::should_track_with_triangel(champsim::address pc, bool is_miss) 
 
 bool Controller::should_prefetch(champsim::address access_pc, std::size_t prefetcher_id)
 {
-  uint64_t marginal_utility = _filter_table.get(access_pc, prefetcher_id).marginal_utility.get_value();
+  // const uint64_t absolute_accuracy = _filter_table.get(access_pc, prefetcher_id).absolute_accuracy.get_value();
 
+  // return absolute_accuracy >= pumpkin_params::MARGINAL_UTILITY_THRESHOLD;
+
+  uint64_t marginal_utility = _filter_table.get(access_pc, prefetcher_id).marginal_utility.get_value();
+  // ABLATION: MU OFF
+  // uint64_t absolute_accuracy = _filter_table.get(access_pc, prefetcher_id).absolute_accuracy.get_value();
+  // if (absolute_accuracy >= pumpkin_params::MARGINAL_UTILITY_THRESHOLD)
+  //   return true;
   if (marginal_utility >= pumpkin_params::MARGINAL_UTILITY_THRESHOLD)
     return true;
-
   return false;
 }
 

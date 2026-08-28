@@ -30,3 +30,10 @@ compile_commands.json
 
 .vscode/
 **/.DS_Store
+
+jobsheet/
+results/
+graphs/ 
+results_old/
+results_v2/
+gnuplot/

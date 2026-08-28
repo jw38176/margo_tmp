@@ -85,10 +85,11 @@ private:
   struct prefetch_candidate_stats {
     uint64_t candidates{0};      // candidates seen from the sub-prefetcher
     uint64_t produced{0};        // passed the degree gate (these enter the accuracy sample)
-    uint64_t issued{0};          // prefetch_line() accepted
+    uint64_t issued{0};          // prefetch_line() accepted and line not already in cache/MSHR
+    uint64_t redundant{0};       // stats only: selected but line already in cache or MSHR
     uint64_t throttled{0};       // dropped by the degree budget
     uint64_t deduped{0};         // already covered by the sandbox (recently prefetched)
-    uint64_t not_issued{0};      // passed gate + dedup but prefetch_line() declined
+    uint64_t not_issued{0};      // passed gate + dedup, not redundant, but prefetch_line() declined
     uint64_t useful{0};          // later confirmed by a demand hit (counted against produced)
     uint64_t demand_trained{0};  // demands routed to this sub-prefetcher (a training occurrence)
     uint64_t demand_filtered{0}; // demands withheld because this sub-prefetcher was blocked (IB state)

@@ -44,8 +44,9 @@ private:
   {
     uint64_t candidates{0};
     uint64_t issued{0};
+    uint64_t redundant{0};  // stats only: selected but line already in cache or MSHR
     uint64_t throttled{0};  // dropped by degree control (degree gate said "no")
-    uint64_t not_issued{0}; // gate said "yes" but prefetch_line() declined (e.g. queue full)
+    uint64_t not_issued{0}; // gate said "yes", not redundant, but prefetch_line() declined (e.g. queue full)
     uint64_t useful{0};     // demand hit on a line this prefetcher brought in
     uint64_t pollution{0};  // demand miss on a line this prefetcher's fill evicted
   };

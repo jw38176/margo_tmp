@@ -5,6 +5,33 @@
 
 #include "../_rand/rand.hh"
 
+// Regular (deterministic) Saturating Counter
+struct rsc
+{
+  uint64_t current_value;
+  uint64_t saturation_value;
+
+  rsc(uint64_t num_bits = 3)
+      : // Initialize to half the saturation value
+        current_value((1ULL << num_bits) / 2), saturation_value((1ULL << num_bits) - 1)
+  {
+  }
+
+  void increment()
+  {
+    if (current_value < saturation_value)
+      ++current_value;
+  }
+
+  void decrement()
+  {
+    if (current_value > 0)
+      --current_value;
+  }
+
+  uint64_t get_value() const { return current_value; }
+};
+
 // Stochastic Saturating Counter
 struct ssc
 {

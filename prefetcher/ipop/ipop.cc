@@ -217,6 +217,10 @@ void ipop::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& ca
     // still has budget left.
     const bool gate = (_issue_budget[prefetcher_id] > 0);
 
+    // Stats-only residency probe (does not gate prefetch_line()).
+    const champsim::address pf_line_addr{champsim::block_number{candidate.address}};
+    const bool redundant = intern_->in_cache(pf_line_addr) || intern_->in_mshr(pf_line_addr);
+
     bool issued = false;
     if (gate) {
       issued = prefetch_line(candidate.address, candidate.fill_this_level, candidate.metadata);
@@ -236,6 +240,8 @@ void ipop::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& ca
     stats.candidates++;
     if (!gate) {
       stats.throttled++;
+    } else if (redundant) {
+      stats.redundant++;
     } else if (issued) {
       stats.issued++;
     } else {
@@ -347,6 +353,8 @@ void ipop::prefetcher_final_stats()
       std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0}, [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.candidates; });
   const uint64_t total_issued =
       std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0}, [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.issued; });
+  const uint64_t total_redundant =
+      std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0}, [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.redundant; });
   const uint64_t total_throttled =
       std::accumulate(_pf_stats.begin(), _pf_stats.end(), uint64_t{0}, [](uint64_t sum, const prefetch_candidate_stats& s) { return sum + s.throttled; });
   const uint64_t total_not_issued =
@@ -358,15 +366,16 @@ void ipop::prefetcher_final_stats()
   std::cout << "  Total candidates: " << total_candidates << std::endl;
   std::cout << std::fixed << std::setprecision(2);
   std::cout << "  Issued:    " << total_issued << " (" << pct(total_issued, total_candidates) << "%)" << std::endl;
+  std::cout << "  Redundant (in cache/MSHR): " << total_redundant << " (" << pct(total_redundant, total_candidates) << "%)" << std::endl;
   std::cout << "  Throttled: " << total_throttled << " (" << pct(total_throttled, total_candidates) << "%)" << std::endl;
   std::cout << "  Selected but not issued: " << total_not_issued << " (" << pct(total_not_issued, total_candidates) << "%)" << std::endl;
 
-  std::cout << std::endl << "  Per sub-prefetcher (final-degree | candidates | issued | useful | pollution):" << std::endl;
+  std::cout << std::endl << "  Per sub-prefetcher (final-degree | candidates | issued | redundant | useful | pollution):" << std::endl;
   for (std::size_t prefetcher_id = 0; prefetcher_id < _pf_stats.size(); ++prefetcher_id) {
     const auto& stats = _pf_stats[prefetcher_id];
     std::cout << "    " << sub_prefetcher_name(prefetcher_id) << ": degree=" << _current_state[prefetcher_id] << " | cand=" << stats.candidates
               << " | issued=" << stats.issued << " (" << pct(stats.issued, total_issued) << "% of issued)"
-              << " | useful=" << stats.useful << " | pollution=" << stats.pollution << std::endl;
+              << " | redundant=" << stats.redundant << " | useful=" << stats.useful << " | pollution=" << stats.pollution << std::endl;
   }
   std::cout << "================================================" << std::endl;
 }
