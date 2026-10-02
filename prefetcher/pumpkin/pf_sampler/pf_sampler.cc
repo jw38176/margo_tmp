@@ -39,7 +39,7 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
       return std::nullopt;
     }
 
-    if (!updated.useful)
+    if (updated.training == TrainingState::Pending)
     {
       // Record new prefetch from a different prefetcher for this line
       if (updated.prefetch_timestamps[prefetcher_id] == 0)
@@ -59,20 +59,19 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
       return std::nullopt;
     }
 
-    if (delay_subtimely_training)
+    if (updated.training == TrainingState::AwaitingFill)
     {
-      if (updated.valid)
-      {
-        // A late prefetch was already consumed by demand and is waiting for fill
-        // latency before positive training. Preserve that pending terminal event.
-        return std::nullopt;
-      }
-
-      // useful==true and valid==false means we've already trained for this entry.
+      // A late prefetch was already consumed by demand and is waiting for fill
+      // latency before positive training. Preserve that pending terminal event.
+      return std::nullopt;
     }
-    else
+
+    // A Trained shadow is being re-prefetched, so the fresh entry below takes over
+    // its slot. That ends the shadow's calibration race sampler-first. No terminal
+    // event: this entry was already positively trained.
+    if (updated.in_calibration_race())
     {
-      // useful==true means valid==false and we've already trained for this entry.
+      report_sampler_table_evict();
     }
     // Overwrite it with a fresh entry below.
   }
@@ -89,8 +88,8 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
   e.prefetch_src_pcs.assign(_num_prefetchers, champsim::address{});
   e.prefetched = prefetched;
   e.in_cache = false;
-  e.useful = false;
-  e.valid = true;
+  e.training = TrainingState::Pending;
+  e.calibration_live = true;
   e.llc_resident_at_record = llc_resident;
 
   if (prefetcher_id < _num_prefetchers)
@@ -107,18 +106,24 @@ std::optional<PfSampler::EvictionEvent> PfSampler::record_prefetch(champsim::add
 
   pf_sampler_entry& victim = evicted.value();
 
-  // Only calibrate on terminal events for prefetched entries that were filled into cache.
-  if (victim.prefetched && victim.in_cache && victim.valid && !victim.useful)
+  // The sampler dropped this entry while its line was still in cache, so the race
+  // resolves sampler-first. Counted once for unused live prefetches and for Trained
+  // shadows alike, so both outcomes of a useful prefetch stay visible to the gate.
+  if (victim.in_calibration_race())
   {
     report_sampler_table_evict();
   }
 
-  if (!victim.valid || !victim.prefetched || (delay_subtimely_training && victim.useful))
+  // Only an unused, issued prefetch still owes a terminal event; a shadow was
+  // already trained positively and must not now be trained negatively.
+  const bool trainable = victim.calibration_live && victim.prefetched && victim.training == TrainingState::Pending;
+  victim.calibration_live = false;
+
+  if (!trainable)
   {
     return std::nullopt;
   }
 
-  victim.valid = false;
   return EvictionEvent{victim, EvictionCause::PfSamplerCapacity};
 }
 
@@ -149,14 +154,16 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_fill(champsim::a
 
   if (delay_subtimely_training)
   {
-    // Delayed CacheHit event for late prefetches
-    if (updated.useful && updated.valid)
+    // Delayed LatePrefetch event: a demand already consumed this line and the fill
+    // has now supplied the latency the event needs. Retain the entry as a Trained
+    // shadow rather than invalidating it, so it keeps contesting the calibration
+    // race; it can no longer emit another event.
+    if (updated.training == TrainingState::AwaitingFill)
     {
-      updated.valid = false;
-      pf_sampler_entry snapshot = updated;
-      _pf_sampler_table.invalidate(probe);
+      updated.training = TrainingState::Trained;
+      _pf_sampler_table.fill(updated);
       _late_prefetch_events++;
-      return EvictionEvent{snapshot, EvictionCause::LatePrefetch};
+      return EvictionEvent{updated, EvictionCause::LatePrefetch};
     }
   }
 
@@ -174,13 +181,15 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_demand_access(champsim
     return std::nullopt;
 
   pf_sampler_entry entry = hit.value();
-  if (!entry.valid)
+
+  // A Trained shadow has already had its one positive training event. The check_hit
+  // above refreshed its LRU recency, which is the whole effect of this access: the
+  // demand metadata backing the original event stays frozen, and no event is emitted.
+  if (entry.training == TrainingState::Trained)
   {
     return std::nullopt;
   }
 
-  // Mark entry as used by demand to prevent double-counting.
-  entry.useful = true;
   entry.demand_pc = demand_pc;
 
   if (delay_subtimely_training)
@@ -190,26 +199,24 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_demand_access(champsim
     if (!entry.in_cache)
     {
       // This is a late prefetch: keep the entry until cache_fill computes latency.
+      entry.training = TrainingState::AwaitingFill;
       _pf_sampler_table.fill(entry);
       return std::nullopt;
     }
-
-    entry.valid = false;
   }
   else
   {
-    entry.valid = false;
     entry.in_cache = true;
   }
 
-  // Snapshot the consumed entry for the controller, then invalidate the
-  // pf_sampler slot so the LRU can reclaim it without producing an extra
-  // PfSamplerCapacity event.
-  pf_sampler_entry snapshot = entry;
-  _pf_sampler_table.invalidate(probe);
+  // The demand consumed a timely prefetch. Emit the single CacheHit event, but keep
+  // the entry as a Trained shadow: its line is still in cache, so it must still be
+  // attributed to whichever of the sampler or the cache replaces it first.
+  entry.training = TrainingState::Trained;
+  _pf_sampler_table.fill(entry);
 
   _cache_hit_events++;
-  return EvictionEvent{snapshot, EvictionCause::CacheHit};
+  return EvictionEvent{entry, EvictionCause::CacheHit};
 }
 
 std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_evict(champsim::address line_addr)
@@ -223,19 +230,29 @@ std::optional<PfSampler::EvictionEvent> PfSampler::notify_cache_evict(champsim::
 
   pf_sampler_entry entry = hit.value();
 
-  // Only valid, filled prefetches generate cache-eviction events.
-  if (!entry.prefetched || !entry.in_cache || !entry.valid || entry.useful)
+  // Only issued prefetches that reached the cache are contesting the race.
+  if (!entry.in_calibration_race())
   {
     return std::nullopt;
   }
 
-  // Bookkeeping 
-  entry.in_cache = false;
-  entry.valid = false;
-
+  // The cache dropped the line while the sampler still tracked it, so the race
+  // resolves cache-first. Counted once for unused live prefetches and for Trained
+  // shadows alike.
   report_cache_evict();
 
+  // Bookkeeping
+  entry.in_cache = false;
+  entry.calibration_live = false;
+
   _pf_sampler_table.invalidate(probe);
+
+  // A shadow was already trained positively, so the calibration count above is its
+  // only remaining contribution; only an unused prefetch is trained negatively.
+  if (entry.training != TrainingState::Pending)
+  {
+    return std::nullopt;
+  }
 
   return EvictionEvent{entry, EvictionCause::CacheEvict};
 }

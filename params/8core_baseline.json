@@ -10,7 +10,7 @@
       "ifetch_buffer_size": 64,
       "decode_buffer_size": 32,
       "dispatch_buffer_size": 32,
-      "register_file_size": 256,
+      "register_file_size": 512,
       "rob_size": 352,
       "lq_size": 128,
       "sq_size": 72,

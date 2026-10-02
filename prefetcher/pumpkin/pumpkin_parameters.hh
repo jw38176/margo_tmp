@@ -54,7 +54,7 @@ inline constexpr uint64_t NEGATIVE_LEAK_INV_PROB = 100;
 inline constexpr uint64_t TIMESTAMP_BITS = 14;
 inline constexpr uint64_t TIMESTAMP_MASK = (1ULL << TIMESTAMP_BITS) - 1;
 inline constexpr uint64_t TIMESTAMP_HALF = 1ULL << (TIMESTAMP_BITS - 1);
-inline constexpr uint64_t LINE_TAG_BITS = 14;
+inline constexpr uint64_t LINE_TAG_BITS = 16;
 inline constexpr uint64_t LINE_TAG_MASK = (1ULL << LINE_TAG_BITS) - 1;
 
 } // namespace pumpkin_params

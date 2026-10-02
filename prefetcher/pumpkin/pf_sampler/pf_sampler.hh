@@ -25,13 +25,27 @@ public:
   // Indicates why a pf_sampler_entry is sent to the controller, which uses it for training:
   //  - PfSamplerCapacity: LRU replacement, treated as a cache eviction.
   //  - CacheEvict: Real prefetched line evicted from cache before use (negative training).
-  //  - CacheHit: Demand access consumed a prefetched line (positive training).
+  //  - CacheHit: Demand access consumed a timely prefetched line (positive training).
+  //  - LatePrefetch: Demand access consumed a prefetch that had not filled yet; the
+  //    event is deferred until the fill supplies the latency (positive training).
+  // Each entry produces at most one of these events, in its entire lifetime.
   enum class EvictionCause
   {
     PfSamplerCapacity,
     CacheEvict,
     CacheHit,
     LatePrefetch,
+  };
+
+  // How far an entry has progressed toward its single terminal training event.
+  // This is deliberately kept separate from calibration residency (see
+  // `calibration_live`): a Trained entry no longer trains, but is retained as
+  // shadow metadata so it can still resolve the replacement race below.
+  enum class TrainingState : uint8_t
+  {
+    Pending,      // No demand has consumed the prefetch yet; negative training is still possible.
+    AwaitingFill, // Demand consumed a not-yet-filled line; the LatePrefetch event waits on notify_cache_fill.
+    Trained,      // Positive training already emitted; the entry survives only as a calibration shadow.
   };
 
   struct pf_sampler_entry
@@ -48,8 +62,24 @@ public:
     // Prefetch Life Cycle Flags
     bool prefetched{false}; // Whether the prefetch was issued or filtered (currently only for tracking)
     bool in_cache{false};   // Mirrors the cache state of the line. Always false for a filtered entry.
-    bool useful{false};     // Set after demand consumes this entry, prevents negative training on a subsequent eviction event.
-    bool valid{true};       // Cleared after any terminal event so subsequent cache/pf_sampler evicts don't double-count
+
+    // Training progress. Governs which terminal event (if any) this entry may still
+    // emit; it says nothing about whether the entry still occupies a sampler slot.
+    TrainingState training{TrainingState::Pending};
+
+    // Calibration residency. The sampler is sized by racing its own replacements
+    // against L2 replacements of the same lines, so every issued prefetch that
+    // reached the cache must be attributed to exactly one side of that race:
+    // cache-first (report_cache_evict) or sampler-first (report_sampler_table_evict).
+    // Cleared on the snapshot of whichever event resolves the race, so an entry can
+    // never be counted twice. Independent of `training`: an already-Trained entry is
+    // kept as a shadow precisely so it can still resolve its race.
+    bool calibration_live{true};
+
+    // True while this entry is still contesting the replacement race. Filtered
+    // (non-issued) candidates and prefetches that never filled are excluded, so they
+    // never enter the real-prefetch calibration population.
+    bool in_calibration_race() const { return prefetched && in_cache && calibration_live; }
 
     // Ground-truth fill origin, captured at cache-fill time. from_dram == true
     // means the fill was served by DRAM; from_dram == false means it was served
@@ -72,20 +102,28 @@ public:
     EvictionCause cause;
   };
 
-  // Records a prefetch candidate. If inserting evicts an entry, returns a PfSamplerCapacity event; otherwise returns std::nullopt.
+  // Records a prefetch candidate. If inserting displaces an unused live prefetch, returns a PfSamplerCapacity event;
+  // displacing an already-Trained shadow resolves its calibration race sampler-first but emits no event.
   // `llc_resident` is the LLC residency of the line probed eagerly at record time.
   std::optional<EvictionEvent> record_prefetch(champsim::address pf_line_addr, uint64_t cycle, champsim::address src_pc, std::size_t prefetcher_id,
                                                bool prefetched, bool llc_resident); // `prefetched` is false for a filtered prefetch request
 
   // Updates pf_sampler entry when its prefetched line is filled into cache.
   // `from_dram` is the cache's ground-truth fill origin for this line (true if
-  // served by DRAM, false if served by the LLC).
+  // served by DRAM, false if served by the LLC). For an entry left AwaitingFill by
+  // an earlier demand, this is where the deferred LatePrefetch event is emitted;
+  // the entry is then retained as a Trained shadow rather than invalidated.
   std::optional<PfSampler::EvictionEvent> notify_cache_fill(champsim::address pf_line_addr, uint64_t cycle, bool from_dram);
 
-  // On demand cache access, returns CacheHit event and invalidates matching pf_sampler entry.
+  // On demand cache access, returns a CacheHit event for the first demand that
+  // consumes a timely prefetch. The entry is retained as a Trained shadow so it
+  // still resolves its calibration race; later accesses to that shadow only refresh
+  // its LRU recency and emit nothing.
   std::optional<EvictionEvent> notify_demand_access(champsim::address line_addr, uint64_t cycle, champsim::address demand_pc);
 
-  // On cache eviction, returns CacheEvict event for real prefetches that were still tracked.
+  // On cache eviction, resolves the calibration race cache-first for any tracked
+  // real prefetch. Returns a CacheEvict event only when the line went unused, since
+  // an already-Trained shadow must not be trained a second time.
   std::optional<EvictionEvent> notify_cache_evict(champsim::address line_addr);
 
   uint64_t cache_hit_events() const { return _cache_hit_events; }

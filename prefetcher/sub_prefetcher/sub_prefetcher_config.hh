@@ -15,7 +15,8 @@
 // #include "configs/6pref.hh"
 
 // *PLACE SCRIPT VARIABLE HERE*
-#include "configs/8pref.hh"
+#include "configs/L2.hh"
+// L2.hh is the default config.
 
 namespace pumpkin_wrappers
 {
