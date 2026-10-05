@@ -65,6 +65,7 @@ private:
   // Per-PC accuracy accounting for the current learning phase.
   struct SampleEntry {
     bool valid{false};
+    uint64_t pc{0};
     uint16_t tag{0};
     uint16_t demands{0};
     uint16_t deads{0};
@@ -119,6 +120,7 @@ private:
   static uint64_t xor_fold(uint64_t key, int index_len);
 
   static std::size_t pc_index(uint64_t pc);
+  static std::size_t sample_index(uint64_t pc);
   static uint16_t pc_tag(uint64_t pc);
   static std::size_t sandbox_index(uint64_t block);
   static uint8_t sandbox_tag(uint64_t block);
@@ -131,8 +133,8 @@ private:
   void account_demand(champsim::address ip); // demands++, phase rollover, dead handling
 
   // Phase / state-machine helpers.
-  void end_of_phase(std::size_t index, const SampleEntry& data);
-  void kill_pc(std::size_t index);
+  void end_of_phase(uint64_t pc, const SampleEntry& data);
+  void kill_pc(uint64_t pc);
 
   // Candidate handling.
   void process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id);

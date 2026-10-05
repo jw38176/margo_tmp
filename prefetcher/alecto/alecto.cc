@@ -54,6 +54,8 @@ uint64_t alecto::xor_fold(uint64_t key, int index_len)
 
 std::size_t alecto::pc_index(uint64_t pc) { return xor_fold(pc, alecto_params::PC_INDEX_BITS) % alecto_params::ALLOCATION_TABLE_SIZE; }
 
+std::size_t alecto::sample_index(uint64_t pc) { return xor_fold(pc, alecto_params::PC_INDEX_BITS) % alecto_params::SAMPLE_TABLE_SIZE; }
+
 uint16_t alecto::pc_tag(uint64_t pc) { return static_cast<uint16_t>((pc >> alecto_params::PC_INDEX_BITS) & ((1ULL << alecto_params::PC_TAG_BITS) - 1)); }
 
 std::size_t alecto::sandbox_index(uint64_t block) { return xor_fold(block, alecto_params::SANDBOX_INDEX_BITS) % alecto_params::SANDBOX_TABLE_SIZE; }
@@ -133,7 +135,7 @@ void alecto::check_sandbox(champsim::address addr)
 void alecto::confirm(champsim::address ip, std::size_t prefetcher_id)
 {
   const uint64_t pc = ip.to<uint64_t>();
-  const std::size_t index = pc_index(pc);
+  const std::size_t index = sample_index(pc);
   const uint16_t tag = pc_tag(pc);
 
   auto& sample = _sample_table[index];
@@ -148,7 +150,7 @@ void alecto::confirm(champsim::address ip, std::size_t prefetcher_id)
 void alecto::account_demand(champsim::address ip)
 {
   const uint64_t pc = ip.to<uint64_t>();
-  const std::size_t index = pc_index(pc);
+  const std::size_t index = sample_index(pc);
   const uint16_t tag = pc_tag(pc);
 
   auto& sample = _sample_table[index];
@@ -165,7 +167,7 @@ void alecto::account_demand(champsim::address ip)
 
   sample.demands++;
   if (sample.demands >= alecto_params::PERIOD) {
-    end_of_phase(index, sample);
+    end_of_phase(pc, sample);
     sample.demands = 0;
     std::fill(sample.confirmed.begin(), sample.confirmed.end(), 0);
     std::fill(sample.issued.begin(), sample.issued.end(), 0);
@@ -174,7 +176,7 @@ void alecto::account_demand(champsim::address ip)
   if (dead) {
     sample.deads++;
     if (sample.deads >= alecto_params::DEAD_THRESH) {
-      kill_pc(index);
+      kill_pc(pc);
       _dead_events++;
     }
   } else if (sample.deads > 0) {
@@ -185,7 +187,7 @@ void alecto::account_demand(champsim::address ip)
 // ─── Phase control ───────────────────────────────────────────────────────────────
 
 // Fold the phase's measured accuracy into the allocation table's per-sub-prefetcher state machine.
-void alecto::end_of_phase(std::size_t index, const SampleEntry& data)
+void alecto::end_of_phase(uint64_t pc, const SampleEntry& data)
 {
   std::vector<double> accuracy(_n, -1.0);
   for (std::size_t i = 0; i < _n; ++i) {
@@ -194,7 +196,7 @@ void alecto::end_of_phase(std::size_t index, const SampleEntry& data)
     }
   }
 
-  auto& alloc = _allocation_table[index];
+  auto& alloc = _allocation_table[pc_index(pc)];
 
   if (alloc.valid && alloc.tag == data.tag) {
     // Update an existing entry.
@@ -267,13 +269,15 @@ void alecto::end_of_phase(std::size_t index, const SampleEntry& data)
 }
 
 // A PC has gone dead: stop prefetching for it and clear its accounting. Mirrors Dead().
-void alecto::kill_pc(std::size_t index)
+void alecto::kill_pc(uint64_t pc)
 {
-  _sample_table[index].demands = 0;
+  const std::size_t sample = sample_index(pc);
+  const std::size_t alloc = pc_index(pc);
+  _sample_table[sample].demands = 0;
   for (std::size_t i = 0; i < _n; ++i) {
-    _allocation_table[index].states[i] = 0;
-    _sample_table[index].confirmed[i] = 0;
-    _sample_table[index].issued[i] = 0;
+    _allocation_table[alloc].states[i] = 0;
+    _sample_table[sample].confirmed[i] = 0;
+    _sample_table[sample].issued[i] = 0;
   }
 }
 
@@ -303,14 +307,15 @@ void alecto::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& 
     // Count the produced candidate against the issuing PC's sample entry, creating/claiming the entry
     // as needed (this is where a PC becomes "tracked").
     const uint64_t pc = candidate.trigger_ip.to<uint64_t>();
-    const std::size_t s_index = pc_index(pc);
+    const std::size_t s_index = sample_index(pc);
     const uint16_t s_tag = pc_tag(pc);
     auto& sample = _sample_table[s_index];
     if (!(sample.valid && sample.tag == s_tag)) {
       if (sample.valid) {
-        end_of_phase(s_index, sample); // flush the evicted PC's phase before reuse
+        end_of_phase(sample.pc, sample); // flush the evicted PC's phase before reuse
       }
       sample.valid = true;
+      sample.pc = pc;
       sample.tag = s_tag;
       sample.demands = 0;
       sample.deads = 0;
