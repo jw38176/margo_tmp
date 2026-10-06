@@ -33,17 +33,18 @@ uint64_t masked_cycle(const CACHE* cache) { return pumpkin_masking::mask_timesta
 // Initialize wrappers for sub-prefetchers and controller
 pumpkin::pumpkin(CACHE* cache) : prefetcher(cache)
 {
-  for (const auto& sub_prefetcher : pumpkin_wrappers::SUB_PREFETCHERS) {
+  for (const auto& sub_prefetcher : pumpkin_wrappers::sub_prefetchers_for(cache->NAME)) {
     _wrapped_prefetchers.emplace_back(sub_prefetcher.make(cache));
+    _sub_prefetcher_names.push_back(sub_prefetcher.name);
   }
   controller = std::make_unique<Controller>(
-      _wrapped_prefetchers.size(), pumpkin_params::FILTER_TABLE_SIZE, [](std::size_t prefetcher_id) { return sub_prefetcher_name(prefetcher_id); });
+      _wrapped_prefetchers.size(), pumpkin_params::FILTER_TABLE_SIZE, [this](std::size_t prefetcher_id) { return sub_prefetcher_name(prefetcher_id); });
   _pf_stats.assign(_wrapped_prefetchers.size(), {});
 }
 
-const char* pumpkin::sub_prefetcher_name(std::size_t prefetcher_id)
+const char* pumpkin::sub_prefetcher_name(std::size_t prefetcher_id) const
 {
-  return pumpkin_wrappers::sub_prefetcher_name(prefetcher_id);
+  return prefetcher_id < _sub_prefetcher_names.size() ? _sub_prefetcher_names[prefetcher_id] : "unknown";
 }
 
 void pumpkin::set_llc_reference(CACHE* llc)
@@ -147,7 +148,7 @@ void pumpkin::prefetcher_initialize()
   crit_sampler.init();
 
   // Register to receive ROB-head notifications for this core.
-  champsim::criticality_rob_head_bridge::register_rob_head_sink(intern_->cpu, [this](uint64_t instr_id, uint64_t cycle) { on_rob_head(instr_id, cycle); });
+  champsim::criticality_rob_head_bridge::register_rob_head_sink(intern_->cpu, this, [this](uint64_t instr_id, uint64_t cycle) { on_rob_head(instr_id, cycle); });
 
   for (auto& wrapped_prefetcher : _wrapped_prefetchers) {
     wrapped_prefetcher->initialize();
@@ -293,7 +294,7 @@ uint32_t pumpkin::prefetcher_cache_fill(champsim::address addr, long set, long w
 
 void pumpkin::prefetcher_final_stats()
 {
-  champsim::criticality_rob_head_bridge::unregister_rob_head_sink(intern_->cpu);
+  champsim::criticality_rob_head_bridge::unregister_rob_head_sink(intern_->cpu, this);
 
   const auto pct = [](uint64_t num, uint64_t denom) -> double {
     return denom == 0 ? 0.0 : (static_cast<double>(num) * 100.0) / static_cast<double>(denom);
@@ -402,7 +403,7 @@ void pumpkin::prefetcher_final_stats()
   std::cout << "    fill_latency == 0: " << inacc_llc_fill0 << " (" << pct(inacc_llc_fill0, inacc_llc) << "% of LLC)" << std::endl;
   std::cout << "    fill_latency != 0: " << inacc_llc_filln << " (" << pct(inacc_llc_filln, inacc_llc) << "% of LLC)" << std::endl;
 
-  controller->print_filter_table_stats(std::cout, [](std::size_t prefetcher_id) { return sub_prefetcher_name(prefetcher_id); });
+  controller->print_filter_table_stats(std::cout, [this](std::size_t prefetcher_id) { return sub_prefetcher_name(prefetcher_id); });
   controller->print_coverage_filter_stats(std::cout);
 
   for (std::size_t prefetcher_id = 0; prefetcher_id < _wrapped_prefetchers.size(); ++prefetcher_id) {

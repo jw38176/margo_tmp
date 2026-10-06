@@ -70,6 +70,7 @@ private:
   };
 
   std::vector<std::unique_ptr<pumpkin_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
+  std::vector<const char*> _sub_prefetcher_names;
 
   // Dynamic per-sub-prefetcher degree.
   //   > 0 : active, value is the current degree (issue aggressiveness)
@@ -98,7 +99,7 @@ private:
   uint64_t _demand_count{0};
   uint64_t _phase_count{0};
 
-  static const char* sub_prefetcher_name(std::size_t prefetcher_id);
+  const char* sub_prefetcher_name(std::size_t prefetcher_id) const;
 
   static std::size_t pf_index(uint64_t block);
   static uint64_t pf_tag(uint64_t block);

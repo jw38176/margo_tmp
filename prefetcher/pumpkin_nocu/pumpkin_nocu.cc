@@ -147,7 +147,7 @@ void pumpkin_nocu::prefetcher_initialize()
   crit_sampler.init();
 
   // Register to receive ROB-head notifications for this core.
-  champsim::criticality_rob_head_bridge::register_rob_head_sink(intern_->cpu, [this](uint64_t instr_id, uint64_t cycle) { on_rob_head(instr_id, cycle); });
+  champsim::criticality_rob_head_bridge::register_rob_head_sink(intern_->cpu, this, [this](uint64_t instr_id, uint64_t cycle) { on_rob_head(instr_id, cycle); });
 
   for (auto& wrapped_prefetcher : _wrapped_prefetchers) {
     wrapped_prefetcher->initialize();
@@ -292,7 +292,7 @@ uint32_t pumpkin_nocu::prefetcher_cache_fill(champsim::address addr, long set, l
 
 void pumpkin_nocu::prefetcher_final_stats()
 {
-  champsim::criticality_rob_head_bridge::unregister_rob_head_sink(intern_->cpu);
+  champsim::criticality_rob_head_bridge::unregister_rob_head_sink(intern_->cpu, this);
 
   const auto pct = [](uint64_t num, uint64_t denom) -> double {
     return denom == 0 ? 0.0 : (static_cast<double>(num) * 100.0) / static_cast<double>(denom);

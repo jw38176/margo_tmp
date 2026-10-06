@@ -15,8 +15,9 @@ uint64_t block_of(champsim::address addr) { return addr.to<uint64_t>() >> LOG2_B
 
 alecto::alecto(CACHE* cache) : prefetcher(cache)
 {
-  for (const auto& sub_prefetcher : pumpkin_wrappers::SUB_PREFETCHERS) {
+  for (const auto& sub_prefetcher : pumpkin_wrappers::sub_prefetchers_for(cache->NAME)) {
     _wrapped_prefetchers.emplace_back(sub_prefetcher.make(cache));
+    _sub_prefetcher_names.push_back(sub_prefetcher.name);
   }
   _n = _wrapped_prefetchers.size();
 
@@ -37,7 +38,10 @@ alecto::alecto(CACHE* cache) : prefetcher(cache)
   _pf_stats.assign(_n, {});
 }
 
-const char* alecto::sub_prefetcher_name(std::size_t prefetcher_id) { return pumpkin_wrappers::sub_prefetcher_name(prefetcher_id); }
+const char* alecto::sub_prefetcher_name(std::size_t prefetcher_id) const
+{
+  return prefetcher_id < _sub_prefetcher_names.size() ? _sub_prefetcher_names[prefetcher_id] : "unknown";
+}
 
 // ─── Index / tag helpers ─────────────────────────────────────────────────────────
 

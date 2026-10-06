@@ -42,7 +42,8 @@ private:
   };
 
   std::vector<prefetch_candidate_stats> _pf_stats;
-  static const char* sub_prefetcher_name(std::size_t prefetcher_id);
+  std::vector<const char*> _sub_prefetcher_names;
+  const char* sub_prefetcher_name(std::size_t prefetcher_id) const;
 
   PfSampler pf_sampler{pumpkin_params::SAMPLER_SETS, pumpkin_params::SAMPLER_WAYS};
   CritSampler crit_sampler{pumpkin_params::CRIT_SAMPLER_SETS, pumpkin_params::CRIT_SAMPLER_WAYS};

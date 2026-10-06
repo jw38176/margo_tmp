@@ -98,6 +98,7 @@ private:
 
   std::size_t _n{0}; // number of sub-prefetchers
   std::vector<std::unique_ptr<pumpkin_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
+  std::vector<const char*> _sub_prefetcher_names;
 
   std::vector<AllocationEntry> _allocation_table{alecto_params::ALLOCATION_TABLE_SIZE};
   std::vector<SampleEntry> _sample_table{alecto_params::SAMPLE_TABLE_SIZE};
@@ -116,7 +117,7 @@ private:
   uint64_t _phase_count{0};
   uint64_t _dead_events{0};
 
-  static const char* sub_prefetcher_name(std::size_t prefetcher_id);
+  const char* sub_prefetcher_name(std::size_t prefetcher_id) const;
   static uint64_t xor_fold(uint64_t key, int index_len);
 
   static std::size_t pc_index(uint64_t pc);
