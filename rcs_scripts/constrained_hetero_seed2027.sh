@@ -22,7 +22,7 @@ MOLOS="$HOME/molos/main.py"
 JOBSHEET="$TMPDIR/pumpkin_hetero.json"
 
 # A unique batch avoids colliding with previous submitted jobs.
-BATCH="pumpkin-hetero-${PBS_JOBID%%.*}"
+BATCH="constrained-pumpkin-hetero-2027-${PBS_JOBID%%.*}"
 
 cd "$PUMPKIN_ROOT"
 

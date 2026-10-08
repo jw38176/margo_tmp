@@ -29,7 +29,7 @@ MOLOS="$HOME/molos/main.py"
 JOBSHEET="$TMPDIR/pumpkin_hetero.json"
 
 # A unique batch avoids colliding with previous submitted jobs.
-BATCH="pumpkin-hetero-${SLURM_JOB_ID}"
+BATCH="constrained-pumpkin-hetero-2222-${SLURM_JOB_ID}"
 
 cd "$PUMPKIN_ROOT"
 
