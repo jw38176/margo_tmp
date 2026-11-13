@@ -34,7 +34,7 @@ TEST_CASE("Hits increment the hit and access counts")
                                     "cpu0->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0",
+                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0 LATE:          0",
                                     "cpu0->test_cache AVERAGE MISS LATENCY: - cycles"};
   expected.at(line_index) = expected_line;
 
@@ -62,7 +62,7 @@ TEST_CASE("Misses increment the miss and access counts")
                                     "cpu0->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0",
+                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0 LATE:          0",
                                     "cpu0->test_cache AVERAGE MISS LATENCY: - cycles"};
   expected.at(line_index) = expected_line;
 
@@ -96,7 +96,7 @@ TEST_CASE("Returning MSHRs increment the AMAT")
       "cpu0->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
       "cpu0->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
       "cpu0->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-      "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0",
+      "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0 LATE:          0",
   };
   expected.push_back("cpu0->test_cache AVERAGE MISS LATENCY: " + std::to_string(mshr_return_latency) + " cycles");
   expected.at(line_index) = expected_line;
@@ -117,7 +117,7 @@ TEST_CASE("Prefetch requests increase the count")
                                     "cpu0->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-                                    "cpu0->test_cache PREFETCH REQUESTED:          1 ISSUED:          0 USEFUL:          0 USELESS:          0",
+                                    "cpu0->test_cache PREFETCH REQUESTED:          1 ISSUED:          0 USEFUL:          0 USELESS:          0 LATE:          0",
                                     "cpu0->test_cache AVERAGE MISS LATENCY: - cycles"};
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
@@ -136,7 +136,7 @@ TEST_CASE("Prefetch issues increase the count")
                                     "cpu0->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          1 USEFUL:          0 USELESS:          0",
+                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          1 USEFUL:          0 USELESS:          0 LATE:          0",
                                     "cpu0->test_cache AVERAGE MISS LATENCY: - cycles"};
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
@@ -155,7 +155,7 @@ TEST_CASE("Prefetch useful increases the count")
                                     "cpu0->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          1 USELESS:          0",
+                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          1 USELESS:          0 LATE:          0",
                                     "cpu0->test_cache AVERAGE MISS LATENCY: - cycles"};
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
@@ -174,7 +174,7 @@ TEST_CASE("Prefetch useless increases the count")
                                     "cpu0->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          1",
+                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          1 LATE:          0",
                                     "cpu0->test_cache AVERAGE MISS LATENCY: - cycles"};
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
@@ -210,7 +210,7 @@ TEST_CASE("Multicore stats are tracked separately")
                                     "cpu0->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu0->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0",
+                                    "cpu0->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0 LATE:          0",
                                     "cpu0->test_cache AVERAGE MISS LATENCY: - cycles",
                                     "cpu1->test_cache TOTAL        ACCESS:         11 HIT:         11 MISS:          0 MSHR_MERGE:          0",
                                     "cpu1->test_cache LOAD         ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
@@ -218,7 +218,7 @@ TEST_CASE("Multicore stats are tracked separately")
                                     "cpu1->test_cache PREFETCH     ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu1->test_cache WRITE        ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
                                     "cpu1->test_cache TRANSLATION  ACCESS:          0 HIT:          0 MISS:          0 MSHR_MERGE:          0",
-                                    "cpu1->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0",
+                                    "cpu1->test_cache PREFETCH REQUESTED:          0 ISSUED:          0 USEFUL:          0 USELESS:          0 LATE:          0",
                                     "cpu1->test_cache AVERAGE MISS LATENCY: - cycles"};
   expected.at(line_index_cpu0) = expected_line_cpu0;
   expected.at(line_index_cpu1) = expected_line_cpu1;

@@ -1284,8 +1284,8 @@ class triangel: public champsim::modules::prefetcher{
 
 public:
     // Prefetch candidate produced by prefetch_candidates(). Mirrors the layout expected by the
-    // Pumpkin sub-prefetcher framework (pumpkin_wrappers::WrappedPrefetch) so a wrapper can forward
-    // triangel's predictions to a meta-prefetcher (pumpkin / alecto / naive / ipop / ...).
+    // Margo sub-prefetcher framework (margo_wrappers::WrappedPrefetch) so a wrapper can forward
+    // triangel's predictions to a meta-prefetcher (margo / alecto / naive / ipop / ...).
     struct Candidate {
         champsim::address address{};
         champsim::address trigger_ip{};

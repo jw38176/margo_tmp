@@ -69,7 +69,7 @@ private:
     std::size_t prefetcher_id{0};
   };
 
-  std::vector<std::unique_ptr<pumpkin_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
+  std::vector<std::unique_ptr<margo_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
   std::vector<const char*> _sub_prefetcher_names;
 
   // Dynamic per-sub-prefetcher degree.
@@ -113,7 +113,7 @@ private:
   void run_control();
   void reset_phase_counters();
 
-  void process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id);
+  void process_candidates(std::vector<margo_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id);
 };
 
 #endif

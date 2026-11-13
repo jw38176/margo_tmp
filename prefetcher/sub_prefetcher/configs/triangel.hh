@@ -3,16 +3,16 @@
 
 #include <array>
 
-#include "../../triangel/pumpkin_wrapper.h"
+#include "../../triangel/margo_wrapper.h"
 #include "../sub_prefetcher_common.hh"
 
-namespace pumpkin_wrappers
+namespace margo_wrappers
 {
 
 inline constexpr auto SUB_PREFETCHERS = std::array{
-    SubPrefetcherConfig{"triangel", make_triangel_pumpkin_wrapper},
+    SubPrefetcherConfig{"triangel", make_triangel_margo_wrapper},
 };
 
-} // namespace pumpkin_wrappers
+} // namespace margo_wrappers
 
 #endif

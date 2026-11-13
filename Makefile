@@ -14,11 +14,16 @@ override BTB_ROOT += $(addsuffix /btb,$(MODULE_ROOT))
 override PREFETCH_ROOT += $(addsuffix /prefetcher,$(MODULE_ROOT))
 override REPLACEMENT_ROOT += $(addsuffix /replacement,$(MODULE_ROOT))
 
-# vcpkg integration
-TRIPLET_DIR = $(patsubst %/,%,$(firstword $(filter-out $(ROOT_DIR)/vcpkg_installed/vcpkg/, $(wildcard $(ROOT_DIR)/vcpkg_installed/*/))))
+# Third-party dependencies
+# The sources are vendored under third_party/ and are compiled into static libraries on demand (see third_party/Makefile)
+THIRD_PARTY_DIR = $(ROOT_DIR)/third_party
+THIRD_PARTY_LIB_DIR = $(THIRD_PARTY_DIR)/_build/lib
+third_party_include_dirs = $(addprefix $(THIRD_PARTY_DIR)/,fmt/include CLI11/include nlohmann_json/include Catch2/src zlib bzip2 xz/src/liblzma/api)
+third_party_libs = $(addprefix $(THIRD_PARTY_LIB_DIR)/,libfmt.a liblzma.a libz.a libbz2.a)
+third_party_test_libs = $(addprefix $(THIRD_PARTY_LIB_DIR)/,libCatch2Main.a libCatch2.a)
+
 override CPPFLAGS += -I$(OBJ_ROOT)
-override LDFLAGS  += -L$(TRIPLET_DIR)/lib -L$(TRIPLET_DIR)/lib/manual-link
-override LDLIBS   += -lCLI11 -llzma -lz -lbz2 -lfmt
+override LDLIBS   += $(third_party_libs)
 
 .PHONY: all clean compile_commands compile_commands_clean configclean test pytest maketest
 
@@ -115,7 +120,7 @@ configclean: clean compile_commands_clean
 reverse = $(if $(wordlist 2,2,$(1)),$(call reverse,$(call tail,$1)) $(firstword $(1)),$(1))
 
 absolute.options:
-	@echo "-I$(realpath inc) -isystem $(realpath $(TRIPLET_DIR)/include)" > $@
+	@echo "-I$(realpath inc) $(addprefix -isystem ,$(third_party_include_dirs))" > $@
 
 attach_options = $(call reverse, $(addprefix @,$(filter %.options, $^)))
 
@@ -288,11 +293,15 @@ endif
 # Give the test executable some additional options
 $(test_main_name): override CPPFLAGS += -DCHAMPSIM_TEST_BUILD
 $(test_main_name): override CXXFLAGS += -g3 -Og
-$(test_main_name): override LDLIBS += -lCatch2Main -lCatch2
+$(test_main_name): override LDLIBS += $(third_party_test_libs)
+
+# Build the vendored third-party libraries
+$(third_party_libs) $(third_party_test_libs):
+	+$(MAKE) -C $(THIRD_PARTY_DIR) CC="$(CC)" CXX="$(CXX)" AR="$(AR)" $(patsubst $(THIRD_PARTY_DIR)/%,%,$@)
 
 # Associate objects with executables
-$(test_main_name): $(call get_base_objs,TEST) $(test_base_objs) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
-$(executable_name): $(call get_base_objs,$$(build_id)) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
+$(test_main_name): $(call get_base_objs,TEST) $(test_base_objs) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@) $(third_party_libs) $(third_party_test_libs)
+$(executable_name): $(call get_base_objs,$$(build_id)) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@) $(third_party_libs)
 
 # Link main executables
 $(executable_name) $(test_main_name):

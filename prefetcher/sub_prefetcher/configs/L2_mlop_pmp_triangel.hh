@@ -3,20 +3,20 @@
 
 #include <array>
 
-#include "../../mlop/pumpkin_wrapper.h"
-#include "../../pmp/pumpkin_wrapper.h"
-#include "../../triangel/pumpkin_wrapper.h"
+#include "../../mlop/margo_wrapper.h"
+#include "../../pmp/margo_wrapper.h"
+#include "../../triangel/margo_wrapper.h"
 #include "../sub_prefetcher_common.hh"
 
-namespace pumpkin_wrappers
+namespace margo_wrappers
 {
 
 inline constexpr auto SUB_PREFETCHERS = std::array{
-    SubPrefetcherConfig{"mlop", make_mlop_pumpkin_wrapper},
-    SubPrefetcherConfig{"pmp", make_pmp_pumpkin_wrapper},
-    SubPrefetcherConfig{"triangel", make_triangel_pumpkin_wrapper},
+    SubPrefetcherConfig{"mlop", make_mlop_margo_wrapper},
+    SubPrefetcherConfig{"pmp", make_pmp_margo_wrapper},
+    SubPrefetcherConfig{"triangel", make_triangel_margo_wrapper},
 };
 
-} // namespace pumpkin_wrappers
+} // namespace margo_wrappers
 
 #endif

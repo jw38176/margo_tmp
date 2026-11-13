@@ -1,6 +1,6 @@
 /* Bingo [https://mshakerinava.github.io/papers/bingo-hpca19.pdf]
  *
- * Ported to the modern ChampSim module interface used by Pumpkin.
+ * Ported to the modern ChampSim module interface used by Margo.
  *
  * The original algorithm (the filter / accumulation / pattern-history tables and
  * the prefetch buffer) is preserved inside the `bingo_space` namespace. The two
@@ -11,7 +11,7 @@
  *   2. The prefetch buffer no longer talks to a CACHE directly. Instead it is
  *      parameterised on a capacity predicate and an issue callback, so it can
  *      either issue prefetches directly (standalone use) or collect candidates
- *      for Pumpkin (see pumpkin_wrapper.{h,cc}).
+ *      for Margo (see margo_wrapper.{h,cc}).
  */
 
 #ifndef PREFETCHER_BINGO_H
@@ -704,7 +704,7 @@ public:
    * @param has_capacity Predicate returning whether another prefetch may be issued right now
    * @param issue Callback that attempts to issue a prefetch; returns true if it was issued.
    *              It receives (pf_addr, fill_this_level, metadata, region_number, pf_offset).
-   * @param defer_commit When true (candidate/Pumpkin mode) the pattern is not consumed here; the
+   * @param defer_commit When true (candidate/Margo mode) the pattern is not consumed here; the
    *              caller is expected to call clear_offset() from its notify_result once a candidate is
    *              actually issued, and the entry is kept alive so un-issued offsets can be retried on a
    *              later access (mirroring the standalone behaviour under capacity pressure).
@@ -983,7 +983,7 @@ private:
 /**
  * ChampSim prefetcher module wrapping the Bingo algorithm. It exposes both the
  * standard module hooks (so it can be used as a normal ChampSim prefetcher) and
- * a `prefetch_candidates` method used by the Pumpkin sub-prefetcher framework.
+ * a `prefetch_candidates` method used by the Margo sub-prefetcher framework.
  */
 class bingo : public champsim::modules::prefetcher
 {

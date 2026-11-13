@@ -3,26 +3,26 @@
 
 #include <array>
 
-#include "../../berti/pumpkin_wrapper.h"
-#include "../../bingo/pumpkin_wrapper.h"
-#include "../../ip_stride/pumpkin_wrapper.h"
-#include "../../mlop/pumpkin_wrapper.h"
-#include "../../next_line/pumpkin_wrapper.h"
-#include "../../pythia/pumpkin_wrapper.h"
+#include "../../berti/margo_wrapper.h"
+#include "../../bingo/margo_wrapper.h"
+#include "../../ip_stride/margo_wrapper.h"
+#include "../../mlop/margo_wrapper.h"
+#include "../../next_line/margo_wrapper.h"
+#include "../../pythia/margo_wrapper.h"
 #include "../sub_prefetcher_common.hh"
 
-namespace pumpkin_wrappers
+namespace margo_wrappers
 {
 
 inline constexpr auto SUB_PREFETCHERS = std::array{
-    SubPrefetcherConfig{"ip_stride", make_ip_stride_pumpkin_wrapper},
-    SubPrefetcherConfig{"berti", make_berti_pumpkin_wrapper},
-    SubPrefetcherConfig{"bingo", make_bingo_pumpkin_wrapper},
-    SubPrefetcherConfig{"pythia", make_pythia_pumpkin_wrapper},
-    SubPrefetcherConfig{"next_line", make_next_line_pumpkin_wrapper},
-    SubPrefetcherConfig{"mlop", make_mlop_pumpkin_wrapper},
+    SubPrefetcherConfig{"ip_stride", make_ip_stride_margo_wrapper},
+    SubPrefetcherConfig{"berti", make_berti_margo_wrapper},
+    SubPrefetcherConfig{"bingo", make_bingo_margo_wrapper},
+    SubPrefetcherConfig{"pythia", make_pythia_margo_wrapper},
+    SubPrefetcherConfig{"next_line", make_next_line_margo_wrapper},
+    SubPrefetcherConfig{"mlop", make_mlop_margo_wrapper},
 };
 
-} // namespace pumpkin_wrappers
+} // namespace margo_wrappers
 
 #endif

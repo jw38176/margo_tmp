@@ -30,7 +30,7 @@ void pmp::operate(champsim::address addr, champsim::address ip, uint8_t cache_hi
   pf->access(block_number, ip.to<uint64_t>());
 
   if (_collect_candidates) {
-    // Candidate mode: the parent meta-prefetcher (Pumpkin) decides which candidates are actually
+    // Candidate mode: the parent meta-prefetcher (Margo) decides which candidates are actually
     // issued. Defer consuming the pattern to notify_result so PMP only marks an offset as prefetched
     // when it was really issued, and un-issued offsets stay available for a later access.
     const auto has_capacity = [] { return true; };

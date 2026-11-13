@@ -15,7 +15,7 @@ uint64_t block_of(champsim::address addr) { return addr.to<uint64_t>() >> LOG2_B
 
 alecto::alecto(CACHE* cache) : prefetcher(cache)
 {
-  for (const auto& sub_prefetcher : pumpkin_wrappers::sub_prefetchers_for(cache->NAME)) {
+  for (const auto& sub_prefetcher : margo_wrappers::sub_prefetchers_for(cache->NAME)) {
     _wrapped_prefetchers.emplace_back(sub_prefetcher.make(cache));
     _sub_prefetcher_names.push_back(sub_prefetcher.name);
   }
@@ -289,7 +289,7 @@ void alecto::kill_pc(uint64_t pc)
 
 // Apply the degree budget and sandbox dedup to each candidate, issue the survivors, and record the
 // issue in the sandbox and sample tables. Mirrors the prefetch-issuing half of IssuePrefetch().
-void alecto::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id)
+void alecto::process_candidates(std::vector<margo_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id)
 {
   for (auto& candidate : candidates) {
     auto& stats = _pf_stats.at(prefetcher_id);

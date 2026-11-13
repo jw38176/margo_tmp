@@ -47,13 +47,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-      with:
-        submodules: 'true'
-
-    - name: Set up
-      run: |
-        vcpkg/bootstrap-vcpkg.sh
-        vcpkg/vcpkg install
 
     - name: Configure
       run: ./config.sh $(pwd)/test/config/compile-only/${{ matrix.file }}

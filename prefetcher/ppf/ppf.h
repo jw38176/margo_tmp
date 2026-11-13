@@ -14,7 +14,7 @@
  * address, triggering IP, IP history, and sub-prefetcher identity) rather
  * than from SPP-specific signatures and deltas.
  *
- * The multi-prefetcher wrapping pattern follows pumpkin / alecto.
+ * The multi-prefetcher wrapping pattern follows margo / alecto.
  */
 
 #include <cstdint>
@@ -49,7 +49,7 @@ struct ppf : public champsim::modules::prefetcher {
 private:
   // ─── Sub-prefetchers ──────────────────────────────────────────────
   std::size_t _n{0};
-  std::vector<std::unique_ptr<pumpkin_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
+  std::vector<std::unique_ptr<margo_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
 
   // ─── Perceptron feature layout ────────────────────────────────────
   //
@@ -145,7 +145,7 @@ private:
   uint64_t _perc_pass{0};
   uint64_t _perc_reject{0};
 
-  void process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id, uint64_t base_addr);
+  void process_candidates(std::vector<margo_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id, uint64_t base_addr);
 
   static uint64_t hash(uint64_t key);
   static const char* sub_prefetcher_name(std::size_t prefetcher_id);

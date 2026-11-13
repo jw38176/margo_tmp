@@ -10,7 +10,7 @@
 
 class CACHE;
 
-namespace pumpkin_wrappers
+namespace margo_wrappers
 {
 
 struct WrappedPrefetch
@@ -55,6 +55,6 @@ public:
   virtual void set_training_gate(std::function<bool(champsim::address ip, bool is_miss)> gate) { (void)gate; }
 };
 
-} // namespace pumpkin_wrappers
+} // namespace margo_wrappers
 
 #endif

@@ -21,7 +21,7 @@
 #include <cstddef>
 #include <string>
 
-namespace pumpkin_wrappers
+namespace margo_wrappers
 {
 
 inline const char* sub_prefetcher_name(std::size_t prefetcher_id)
@@ -37,11 +37,11 @@ struct SubPrefetcherSet {
   const SubPrefetcherConfig* end() const { return first + count; }
 };
 
-// Configs that define PUMPKIN_HAS_L1D_SUB_PREFETCHERS give L1D its own set
+// Configs that define MARGO_HAS_L1D_SUB_PREFETCHERS give L1D its own set
 // (L1D_SUB_PREFETCHERS); every other cache uses SUB_PREFETCHERS.
 inline SubPrefetcherSet sub_prefetchers_for(const std::string& cache_name)
 {
-#ifdef PUMPKIN_HAS_L1D_SUB_PREFETCHERS
+#ifdef MARGO_HAS_L1D_SUB_PREFETCHERS
   if (cache_name.find("L1D") != std::string::npos)
     return {L1D_SUB_PREFETCHERS.data(), L1D_SUB_PREFETCHERS.size()};
 #else
@@ -50,6 +50,6 @@ inline SubPrefetcherSet sub_prefetchers_for(const std::string& cache_name)
   return {SUB_PREFETCHERS.data(), SUB_PREFETCHERS.size()};
 }
 
-} // namespace pumpkin_wrappers
+} // namespace margo_wrappers
 
 #endif

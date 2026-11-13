@@ -28,7 +28,7 @@ uint64_t ppf::hash(uint64_t key)
 
 ppf::ppf(CACHE* cache) : prefetcher(cache)
 {
-  for (const auto& sp : pumpkin_wrappers::SUB_PREFETCHERS) {
+  for (const auto& sp : margo_wrappers::SUB_PREFETCHERS) {
     _wrapped_prefetchers.emplace_back(sp.make(cache));
   }
   _n = _wrapped_prefetchers.size();
@@ -253,7 +253,7 @@ void ppf::reject_add(PerceptronFilter& pf, uint64_t pf_addr, uint64_t trigger_ip
 // Candidate handling
 // ═══════════════════════════════════════════════════════════════════
 
-void ppf::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id, uint64_t base_addr)
+void ppf::process_candidates(std::vector<margo_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id, uint64_t base_addr)
 {
   auto& pf = _filters.at(prefetcher_id);
   auto& stats = _pf_stats.at(prefetcher_id);
@@ -310,7 +310,7 @@ void ppf::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& can
 // ChampSim prefetcher interface
 // ═══════════════════════════════════════════════════════════════════
 
-const char* ppf::sub_prefetcher_name(std::size_t prefetcher_id) { return pumpkin_wrappers::sub_prefetcher_name(prefetcher_id); }
+const char* ppf::sub_prefetcher_name(std::size_t prefetcher_id) { return margo_wrappers::sub_prefetcher_name(prefetcher_id); }
 
 void ppf::prefetcher_initialize()
 {

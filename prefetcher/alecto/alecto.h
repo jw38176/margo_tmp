@@ -25,7 +25,7 @@
 //
 // Adaptation notes vs. the original (legacy-ChampSim) Alecto:
 //   * The legacy version invoked every sub-prefetcher synchronously per demand with set_degree().
-//     Pumpkin's wrapped sub-prefetchers emit candidates asynchronously (cache_operate + lookahead via
+//     Margo's wrapped sub-prefetchers emit candidates asynchronously (cache_operate + lookahead via
 //     cycle_operate) and do not expose set_degree(), so the degree is enforced as a per-demand issue
 //     budget (identical mechanism to IPOP).
 //   * "dead" demand detection (a PC whose prefetchers produce nothing) is determined from whether any
@@ -97,7 +97,7 @@ private:
   };
 
   std::size_t _n{0}; // number of sub-prefetchers
-  std::vector<std::unique_ptr<pumpkin_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
+  std::vector<std::unique_ptr<margo_wrappers::WrappedPrefetcher>> _wrapped_prefetchers;
   std::vector<const char*> _sub_prefetcher_names;
 
   std::vector<AllocationEntry> _allocation_table{alecto_params::ALLOCATION_TABLE_SIZE};
@@ -138,7 +138,7 @@ private:
   void kill_pc(uint64_t pc);
 
   // Candidate handling.
-  void process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id);
+  void process_candidates(std::vector<margo_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id);
 };
 
 #endif

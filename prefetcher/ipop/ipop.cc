@@ -12,7 +12,7 @@
 // ───────────────────────────────────────────────────────────────────────────────
 // IPOP degree controller.
 //
-// Sub-prefetcher set: identical to Pumpkin's (pumpkin_wrappers::SUB_PREFETCHERS).
+// Sub-prefetcher set: identical to Margo's (margo_wrappers::SUB_PREFETCHERS).
 //
 // Adaptation notes vs. the original (legacy-ChampSim) IPOP/UDC implementation:
 //   * The legacy version split useful/pollution events by fill source (LLC vs DRAM) and weighted them
@@ -33,7 +33,7 @@ uint64_t block_of(champsim::address addr) { return addr.to<uint64_t>() >> LOG2_B
 
 ipop::ipop(CACHE* cache) : prefetcher(cache)
 {
-  for (const auto& sub_prefetcher : pumpkin_wrappers::sub_prefetchers_for(cache->NAME)) {
+  for (const auto& sub_prefetcher : margo_wrappers::sub_prefetchers_for(cache->NAME)) {
     _wrapped_prefetchers.emplace_back(sub_prefetcher.make(cache));
     _sub_prefetcher_names.push_back(sub_prefetcher.name);
   }
@@ -214,7 +214,7 @@ void ipop::reset_phase_counters()
 
 // ─── Candidate handling ─────────────────────────────────────────────────────────
 
-void ipop::process_candidates(std::vector<pumpkin_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id)
+void ipop::process_candidates(std::vector<margo_wrappers::WrappedPrefetch>& candidates, std::size_t prefetcher_id)
 {
   for (auto& candidate : candidates) {
     // Degree limit: only let this prefetcher produce more prefetches for the current request while it

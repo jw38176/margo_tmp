@@ -1,12 +1,12 @@
 /* Multi-Lookahead Offset Prefetcher (MLOP)
  *
- * Ported to the modern ChampSim module interface used by Pumpkin.
+ * Ported to the modern ChampSim module interface used by Margo.
  * The original algorithm (the access map table, offset scoring and
  * multi-lookahead prefetch selection) is preserved verbatim inside the
  * `mlop_space` namespace. The only structural change is that MLOP::prefetch
  * no longer talks to a CACHE directly; instead it is parameterised on a
  * capacity predicate and an issue callback so that it can either issue
- * prefetches directly (standalone use) or collect candidates for Pumpkin.
+ * prefetches directly (standalone use) or collect candidates for Margo.
  */
 
 #ifndef PREFETCHER_MLOP_H
@@ -702,7 +702,7 @@ public:
    *
    * `issue` receives (pf_addr, fill_this_level, metadata, fill_level). MLOP marks the access map as
    * PREFTCH for every prefetch that `issue` reports as issued, mirroring the original behaviour. The
-   * raw `fill_level` is forwarded so callers that defer issuing (e.g. the Pumpkin sub-prefetcher
+   * raw `fill_level` is forwarded so callers that defer issuing (e.g. the Margo sub-prefetcher
    * framework) can reproduce the exact mark once the prefetch is actually issued.
    */
   template <typename CapacityFn, typename IssueFn>
@@ -923,7 +923,7 @@ inline constexpr double LLC_THRESH = 2.00; /* off */
 /**
  * ChampSim prefetcher module wrapping the MLOP algorithm. It exposes both the
  * standard module hooks (so it can be used as a normal ChampSim prefetcher) and
- * a `prefetch_candidates` method used by the Pumpkin sub-prefetcher framework.
+ * a `prefetch_candidates` method used by the Margo sub-prefetcher framework.
  */
 class mlop : public champsim::modules::prefetcher
 {

@@ -162,12 +162,6 @@ public:
   channel_type* lower_translate;
 
   uint32_t cpu = 0;
-
-  // Side-channel: instr_id of the access that is about to invoke the prefetcher.
-  // Set in try_hit immediately before impl_prefetcher_cache_operate so prefetchers
-  // can associate a demand access with its originating instruction.
-  uint64_t pref_trigger_instr_id = 0;
-
   std::string NAME;
   uint32_t NUM_SET, NUM_WAY, MSHR_SIZE;
 

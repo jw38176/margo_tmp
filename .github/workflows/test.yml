@@ -155,13 +155,6 @@ jobs:
         sudo apt-get install curl zip unzip tar ${{ matrix.config.cxx }}
 
     - uses: actions/checkout@v4
-      with:
-        submodules: 'true'
-
-    - name: Set up vcpkg
-      run: |
-        vcpkg/bootstrap-vcpkg.sh
-        vcpkg/vcpkg install
 
     - name: Set Coverage Environment
       if: ${{ matrix.config.coverage }}
@@ -186,7 +179,7 @@ jobs:
         --directory . \
         --exclude $(pwd)/.csconfig/\* \
         --exclude $(pwd)/test/\* \
-        --exclude $(pwd)/vcpkg_installed/\* \
+        --exclude $(pwd)/third_party/\* \
         --output-file lcov_cpp.info
 
     - uses: actions/upload-artifact@v4
@@ -200,13 +193,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-      with:
-        submodules: 'true'
-
-    - name: Set up vcpkg
-      run: |
-        vcpkg/bootstrap-vcpkg.sh
-        vcpkg/vcpkg install
 
     - name: Set up coverage
       run: python -m pip install coverage
@@ -226,13 +212,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-      with:
-        submodules: 'true'
 
     - name: Set up
       run: |
-        vcpkg/bootstrap-vcpkg.sh
-        vcpkg/vcpkg install
         sudo apt-get install lcov
 
     - name: Configure

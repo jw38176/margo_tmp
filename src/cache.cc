@@ -188,7 +188,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
                                        fill_mshr.address, fill_mshr.type);
  
      assert(victim_idx >= 0);
-     assert(victim_idx < static_cast<long>(available_ways));
+     assert(victim_idx <= static_cast<long>(available_ways)); // == available_ways means bypass
  
      way = std::next(set_begin, victim_idx);    
   }
@@ -295,7 +295,6 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   auto metadata_thru = handle_pkt.pf_metadata;
   if (should_activate_prefetcher(handle_pkt)) {
-    pref_trigger_instr_id = handle_pkt.instr_id;
     metadata_thru = impl_prefetcher_cache_operate(module_address(handle_pkt), handle_pkt.ip, hit, useful_prefetch, handle_pkt.type, metadata_thru);
   }
 

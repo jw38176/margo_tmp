@@ -8,7 +8,7 @@
 
 class CACHE;
 
-namespace pumpkin_wrappers
+namespace margo_wrappers
 {
 
 using WrappedPrefetcherFactory = std::unique_ptr<WrappedPrefetcher> (*)(CACHE* cache);
@@ -19,6 +19,6 @@ struct SubPrefetcherConfig
   WrappedPrefetcherFactory make;
 };
 
-} // namespace pumpkin_wrappers
+} // namespace margo_wrappers
 
 #endif

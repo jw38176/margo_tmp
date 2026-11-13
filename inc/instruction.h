@@ -115,8 +115,6 @@ struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
   bool scheduled = false;
   bool executed = false;
   bool completed = false;
-  bool reached_rob_head = false; // Set the first cycle this instr becomes the ROB head; signals the criticality sampler
-
   unsigned completed_mem_ops = 0;
   int num_reg_dependent = 0;
 
